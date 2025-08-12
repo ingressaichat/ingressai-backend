@@ -1,7 +1,11 @@
+# =====================================
+# Node.js / Railway .gitignore
+# =====================================
+
 # Dependências
 node_modules/
 
-# Variáveis de ambiente
+# Ambiente
 .env
 .env.*.local
 
@@ -10,8 +14,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
+*.log
 
-# Cache e build
+# Build & Cache
 dist/
 build/
 .cache/
@@ -19,9 +24,24 @@ build/
 .nyc_output/
 coverage/
 
-# Sistema
+# Sistema / OS
 .DS_Store
 Thumbs.db
 
-# Railway / Deploy
-*.log
+# Railway / Deploy temporários
+railway.log
+.railway/
+*.tmp
+.tmp/
+.tmp-*/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Backup / Outros
+*.bak
+*.old
+*.orig
