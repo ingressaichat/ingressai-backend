@@ -1,4 +1,4 @@
-// src/index.js (ESM) — versão monolítica com todos os recursos
+// src/index.js (ESM) — IngressAI backend monolítico com diagnósticos e appsecret_proof
 import 'dotenv/config';
 import express from 'express';
 import axios from 'axios';
@@ -7,7 +7,13 @@ import crypto from 'crypto';
 // ================= ENV =================
 const PORT = process.env.PORT || 3000;
 const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'ingressai123';
-const WHATSAPP_ACCESS_TOKEN = process.env.WHATSAPP_ACCESS_TOKEN || '';
+
+// Fallback: aceita WHATSAPP_ACCESS_TOKEN ou WHATSAPP_API_TOKEN
+const WHATSAPP_ACCESS_TOKEN =
+  process.env.WHATSAPP_ACCESS_TOKEN ||
+  process.env.WHATSAPP_API_TOKEN ||
+  '';
+
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '';
 const WABA_ID = process.env.WABA_ID || '';
 const APP_SECRET = process.env.APP_SECRET || '';
@@ -22,6 +28,29 @@ function log(level, ...args) {
     const ts = new Date().toISOString();
     console.log(`[${ts}] [${level.toUpperCase()}]`, ...args);
   }
+}
+function logAxiosError(prefix, err) {
+  const status = err.response?.status;
+  const data = err.response?.data;
+  const path = err.response?.request?.path;
+  const method = err.config?.method?.toUpperCase?.();
+  const url = err.config?.url;
+  const g = data?.error || {};
+  log('error', `${prefix}:`, {
+    status,
+    method,
+    url,
+    path,
+    graph_error: {
+      message: g.message,
+      type: g.type,
+      code: g.code,
+      error_subcode: g.error_subcode,
+      fbtrace_id: g.fbtrace_id,
+      error_user_title: g.error_user_title,
+      error_user_msg: g.error_user_msg,
+    },
+  });
 }
 
 // ============== ADMIN UTILS ==============
@@ -53,6 +82,8 @@ const stats = {
 };
 const events = new Map(); // id -> {id,title,date,time,place,createdBy,createdAt}
 let eventSeq = 1;
+const flowSubmissions = []; // [{name, cpf, city, event, phone, ts}]
+let lastGraphError = null;
 
 function pushLastMessage(from, text) {
   stats.lastMessages.unshift({ from, text, ts: new Date().toISOString() });
@@ -85,7 +116,7 @@ app.use(
   }),
 );
 
-// ============== WEBHOOK SIGNATURE (opcional) ==============
+// ============== WEBHOOK SIGNATURE (Meta → seu servidor) ==============
 function verifySignature(req) {
   try {
     const signature = req.get('x-hub-signature-256') || '';
@@ -93,6 +124,11 @@ function verifySignature(req) {
     const expected =
       'sha256=' +
       crypto.createHmac('sha256', APP_SECRET).update(req.rawBody || '').digest('hex');
+
+    if (signature.length !== expected.length) {
+      log('warn', 'Webhook signature length mismatch');
+      return false;
+    }
     const ok = crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected));
     if (!ok) log('warn', 'Webhook signature mismatch');
     return ok;
@@ -100,6 +136,28 @@ function verifySignature(req) {
     log('warn', 'verifySignature error:', e.message);
     return false;
   }
+}
+
+// ============== APPSECRET_PROOF (seu servidor → Graph) ==============
+function getAppSecretProof(token) {
+  if (!APP_SECRET || !token) return '';
+  return crypto.createHmac('sha256', APP_SECRET).update(token).digest('hex');
+}
+function withGraphSecurity(config = {}) {
+  const appsecret_proof = getAppSecretProof(WHATSAPP_ACCESS_TOKEN);
+  const base = config || {};
+  const params = new URLSearchParams(base.params || {});
+  if (appsecret_proof) params.set('appsecret_proof', appsecret_proof);
+  return {
+    ...base,
+    params,
+    headers: {
+      Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
+      'Content-Type': 'application/json',
+      ...(base.headers || {}),
+    },
+    timeout: base.timeout ?? 15000,
+  };
 }
 
 // ============== WHATSAPP SENDERS ==============
@@ -114,21 +172,14 @@ async function sendText(to, message) {
         type: 'text',
         text: { body: message },
       },
-      {
-        headers: {
-          Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-          'Content-Type': 'application/json',
-        },
-        timeout: 15000,
-      },
+      withGraphSecurity(),
     );
     stats.sent += 1;
     log('info', 'Message sent:', status, data?.messages?.[0]?.id || '');
     return data;
   } catch (err) {
-    const status = err.response?.status;
-    const resp = err.response?.data;
-    log('error', 'sendText error:', status || '', resp || err.message);
+    lastGraphError = err.response?.data || err.message;
+    logAxiosError('sendText error', err);
     throw err;
   }
 }
@@ -145,18 +196,13 @@ async function sendTemplate(to, name, languageCode = 'pt_BR', components) {
   };
   if (components) payload.template.components = components;
   try {
-    const { data, status } = await axios.post(url, payload, {
-      headers: {
-        Authorization: `Bearer ${WHATSAPP_ACCESS_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      timeout: 15000,
-    });
+    const { data, status } = await axios.post(url, payload, withGraphSecurity());
     stats.sent += 1;
     log('info', 'Template sent:', status, data?.messages?.[0]?.id || '');
     return data;
   } catch (err) {
-    log('error', 'sendTemplate error:', err.response?.status || '', err.response?.data || err.message);
+    lastGraphError = err.response?.data || err.message;
+    logAxiosError('sendTemplate error', err);
     throw err;
   }
 }
@@ -174,7 +220,12 @@ app.get('/debug/env', (req, res) => {
     PHONE_NUMBER_ID: mask(PHONE_NUMBER_ID),
     WABA_ID: mask(WABA_ID),
     VERIFY_TOKEN: !!VERIFY_TOKEN,
-    WHATSAPP_ACCESS_TOKEN: !!WHATSAPP_ACCESS_TOKEN,
+    WHATSAPP_ACCESS_TOKEN_PRESENT: !!WHATSAPP_ACCESS_TOKEN,
+    WHATSAPP_ACCESS_TOKEN_SOURCE: process.env.WHATSAPP_ACCESS_TOKEN
+      ? 'WHATSAPP_ACCESS_TOKEN'
+      : process.env.WHATSAPP_API_TOKEN
+      ? 'WHATSAPP_API_TOKEN'
+      : 'MISSING',
     APP_SECRET: !!APP_SECRET,
     ADMIN_PHONES: [...ADMIN_SET],
   });
@@ -185,13 +236,20 @@ app.get('/__routes', (req, res) => {
       'GET /health',
       'GET /webhook',
       'POST /webhook',
+      'POST /api/receber-dados-flow',
       'GET /status',
       'POST /send-text',
       'POST /send-template',
+      'POST /__selftest_send',
+      'POST /__selftest_template',
       'GET /__routes',
       'GET /debug/env',
+      'GET /debug/last-error',
     ],
   });
+});
+app.get('/debug/last-error', (req, res) => {
+  res.json({ lastGraphError });
 });
 
 // ============== WEBHOOK VERIFY (GET) ==============
@@ -298,6 +356,7 @@ app.post('/webhook', async (req, res) => {
           `• Enviadas: ${stats.sent}`,
           `• Usuários únicos: ${stats.users.size}`,
           `• Eventos criados: ${events.size}`,
+          `• Submissões Flow: ${flowSubmissions.length}`,
           `• Uptime: ${uptimeStr()}`,
           '• Últimas 5 msgs:',
           last,
@@ -377,8 +436,50 @@ app.post('/webhook', async (req, res) => {
 
     return res.sendStatus(200);
   } catch (e) {
+    lastGraphError = e?.response?.data || e?.message || String(e);
     log('error', 'Webhook error:', e?.message || e);
     return res.sendStatus(200); // evita reenvio
+  }
+});
+
+// ============== FLOW DATA (POST /api/receber-dados-flow) ==============
+app.post('/api/receber-dados-flow', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const payload = {
+      name: body.name || body.nome || body?.data?.name || body?.data?.nome || '',
+      cpf: body.cpf || body?.data?.cpf || '',
+      city: body.city || body.cidade || body?.data?.city || body?.data?.cidade || '',
+      event: body.event || body.evento || body?.data?.event || body?.data?.evento || '',
+      phone: normalizeMsisdn(body.phone || body.telefone || body?.data?.phone || ''),
+    };
+
+    flowSubmissions.unshift({ ...payload, ts: new Date().toISOString() });
+    if (flowSubmissions.length > 1000) flowSubmissions.pop();
+
+    log('info', '[FLOW] Dados recebidos:', payload);
+
+    if (payload.phone) {
+      const lines = [
+        `✅ Recebido!`,
+        `Nome: ${payload.name || '-'}`,
+        `CPF: ${payload.cpf || '-'}`,
+        `Cidade: ${payload.city || '-'}`,
+        `Evento: ${payload.event || '-'}`,
+      ];
+      try {
+        await sendText(payload.phone, lines.join('\n'));
+      } catch (e) {
+        lastGraphError = e?.response?.data || e?.message;
+        log('warn', 'Falha ao enviar confirmação do Flow:', e?.response?.data || e.message);
+      }
+    }
+
+    return res.json({ ok: true });
+  } catch (e) {
+    lastGraphError = e?.response?.data || e?.message;
+    log('error', '/api/receber-dados-flow error:', e?.message || e);
+    return res.status(200).json({ ok: false });
   }
 });
 
@@ -390,11 +491,59 @@ app.get('/status', (req, res) => {
     waba_id: WABA_ID || null,
     admins: [...ADMIN_SET],
     events: [...events.values()],
+    flowSubmissionsCount: flowSubmissions.length,
     env: NODE_ENV,
     uptime: uptimeStr(),
     time: new Date().toISOString(),
   });
 });
+
+// Teste rápido de envio de texto e captura de erro do Graph
+app.post('/__selftest_send', async (req, res) => {
+  try {
+    const { to, message = 'Teste IngressAI ✅' } = req.body || {};
+    if (!to) return res.status(400).json({ ok: false, error: "Missing 'to'" });
+    const data = await sendText(to, message);
+    res.json({ ok: true, data });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.response?.data || e.message });
+  }
+});
+
+// Teste de template (fora da janela de 24h)
+app.post('/__selftest_template', async (req, res) => {
+  try {
+    let { to, name, languageCode = 'pt_BR', components, variables } = req.body || {};
+    if (!to) return res.status(400).json({ ok: false, error: "Missing 'to'" });
+    if (!name) return res.status(400).json({ ok: false, error: "Missing 'name' (template name aprovado)" });
+
+    // Se vier "variables" simples (array de strings), converte para BODY parameters
+    if (!components && Array.isArray(variables)) {
+      const params = variables.map((v) => ({ type: 'text', text: String(v) }));
+      components = [{ type: 'body', parameters: params }];
+    }
+
+    const data = await sendTemplate(to, name, languageCode, components);
+    res.json({ ok: true, data });
+  } catch (e) {
+    res.status(500).json({
+      ok: false,
+      error: e?.response?.data || e.message,
+      hint:
+        "Verifique se o template está APROVADO e o nome bate 100%. Se tiver placeholders, envie 'variables' como array de strings em ordem, ou 'components' completos.",
+      example_body_components: [
+        {
+          type: 'body',
+          parameters: [
+            { type: 'text', text: 'João' },
+            { type: 'text', text: 'Evento XPTO' },
+          ],
+        },
+      ],
+    });
+  }
+});
+
 app.post('/send-text', async (req, res) => {
   try {
     const { to, message } = req.body || {};
@@ -421,8 +570,20 @@ app.listen(PORT, () => {
   console.log(`[server] Listening on http://localhost:${PORT}`);
   console.log('  → Health:     GET /health');
   console.log('  → Webhook:    GET/POST /webhook');
+  console.log('  → Flow:       POST /api/receber-dados-flow');
   console.log('  → Status:     GET /status');
   console.log('  → Send text:  POST /send-text');
   console.log('  → Template:   POST /send-template');
+  console.log('  → Selftest:   POST /__selftest_send');
+  console.log('  → Selftest T: POST /__selftest_template');
   console.log('  → Routes:     GET /__routes');
+  console.log('  → Debug ENV:  GET /debug/env');
+  console.log('  → Last Error: GET /debug/last-error');
 });
+
+// Avisos de ENV no boot
+(function checkEnv() {
+  if (!WHATSAPP_ACCESS_TOKEN) log('warn', '[ENV] WHATSAPP_ACCESS_TOKEN/WHATSAPP_API_TOKEN ausente!');
+  if (!PHONE_NUMBER_ID) log('warn', '[ENV] PHONE_NUMBER_ID ausente!');
+  if (!APP_SECRET) log('warn', '[ENV] APP_SECRET ausente (assinatura de webhook será ignorada)!');
+})();
