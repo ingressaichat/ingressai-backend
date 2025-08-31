@@ -6,12 +6,12 @@ import { log } from './utils.mjs';
 export const waRouter = Router();
 
 /** ===== ENV & helpers ===== */
-const WABA_TOKEN = process.env.WHATSAPP_TOKEN || process.env.WABA_TOKEN || '';
+const WABA_TOKEN = process.env.WHATSAPP_TOKEN || process.env.WABA_TOKEN;
 const APP_SECRET = process.env.APP_SECRET || '';
 const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
 const BASE_URL = process.env.BASE_URL || 'http://localhost:3000';
-const PUBLIC_WHATSAPP = process.env.PUBLIC_WHATSAPP || '';
-const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || '').split(',').map(s => s.trim()).filter(Boolean);
+const PUBLIC_WHATSAPP = process.env.PUBLIC_WHATSAPP || ''; // suporte / deep link
+const ADMIN_NUMBERS = (process.env.ADMIN_NUMBERS || process.env.ADMIN_PHONES || '').split(', '?',').map(s => s.trim()).filter(Boolean);
 
 const APP_PROOF = (APP_SECRET && WABA_TOKEN)
   ? crypto.createHmac('sha256', APP_SECRET).update(WABA_TOKEN).digest('hex')
@@ -32,6 +32,17 @@ async function sendText(to, text) {
   await api('messages', { messaging_product: 'whatsapp', to, type: 'text', text: { body: text } });
 }
 
+// --- helpers de UI: clamp com word-boundary e reticências ---
+const clamp = (s, max) => {
+  const t = String(s ?? '').trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max);
+  const lastSpace = cut.lastIndexOf(' ');
+  const base = lastSpace > max - 12 ? cut.slice(0, lastSpace) : cut;
+  return base.replace(/\s+[–—-]?$/, '') + '…';
+};
+
+// sobrescreve wrappers para sempre respeitar limites do WhatsApp
 async function sendButtons(to, bodyText, buttons) {
   await api('messages', {
     messaging_product: 'whatsapp',
@@ -39,8 +50,13 @@ async function sendButtons(to, bodyText, buttons) {
     type: 'interactive',
     interactive: {
       type: 'button',
-      body: { text: bodyText },
-      action: { buttons: buttons.map(({ id, title }) => ({ type: 'reply', reply: { id, title } })) }
+      body: { text: clamp(bodyText, 1024) },
+      action: {
+        buttons: buttons.map(({ id, title }) => ({
+          type: 'reply',
+          reply: { id, title: clamp(title, 20) } // <= 20
+        }))
+      }
     }
   });
 }
@@ -52,9 +68,19 @@ async function sendList(to, headerText, bodyText, rows, buttonText = 'Abrir') {
     type: 'interactive',
     interactive: {
       type: 'list',
-      header: { type: 'text', text: headerText },
-      body: { text: bodyText },
-      action: { button: buttonText, sections: [{ title: 'Opções', rows }] }
+      header: { type: 'text', text: clamp(headerText, 60) }, // <= 60
+      body: { text: clamp(bodyText, 1024) },                 // <= 1024
+      action: {
+        button: clamp(buttonText, 20),                       // <= 20
+        sections: [{
+          title: clamp('Opções', 24),                        // <= 24
+          rows: rows.slice(0, 10).map(r => ({
+            id: r.id,
+            title: clamp(r.title, 24),                       // <= 24  (causador clássico do 131009)
+            description: r.description ? clamp(r.description, 72) : undefined // <= 72
+          }))
+        }]
+      }
     }
   });
 }
@@ -76,18 +102,19 @@ function brEventMeta(city, iso) {
   } catch { return `${city}`; }
 }
 
-/** Conversational state */
+/** ===== Conversational state ===== */
 const state = new Map(); // from -> { step, eventId }
 
-/** Menus */
+/** ===== Menus ===== */
 async function sendMainMenu(to, isAdmin = false) {
   const rows = [
-    { id: 'menu_ver_eventos', title: 'Ver eventos' },
-    { id: 'menu_comprar_hello', title: 'Comprar ingressos (Hello World)' },
-    { id: 'menu_organizador', title: 'Sou organizador' },
-    { id: 'menu_suporte', title: 'Suporte' },
+    { id: 'menu_ver_eventos',   title: 'Ver eventos' },
+    { id: 'menu_comprar_hello', title: 'Comprar ingressos' },
+    { id: 'menu_organizador',   title: 'Sou organizador' },
+    { id: 'menu_suporte',       title: 'Suporte' },
   ];
-  if (isAdmin) rows.push({ id: 'menu_admin', title: 'Painel do organizador (atalhos)' });
+  if (isAdmin) rows.push({ id: 'menu_admin', title: 'Painel do organizador' });
+
   await sendList(to, 'IngressAI', 'Escolha uma opção:', rows);
 }
 
@@ -95,7 +122,9 @@ async function sendEventsList(to) {
   const r = await axios.get(`${BASE_URL}/events`).catch(() => ({ data: {} }));
   let items = [];
   if (Array.isArray(r.data?.items)) items = r.data.items;
-  else if (r.data?.events && typeof r.data.events === 'object') items = Object.values(r.data.events).flat();
+  else if (r.data?.events && typeof r.data.events === 'object') {
+    items = Object.values(r.data.events).flat();
+  }
 
   items = items
     .map(ev => ({
@@ -111,18 +140,19 @@ async function sendEventsList(to) {
 
   const rows = items.map(ev => ({
     id: `buy_ev_${ev.id}`,
-    title: ev.title,
-    description: brEventMeta(ev.city, ev.date).slice(0, 72)
+    title: clamp(ev.title, 24),
+    description: clamp(brEventMeta(ev.city, ev.date), 72)
   }));
 
   await sendList(to, 'Eventos', 'Escolha um evento para comprar:', rows, 'Selecionar');
 }
 
-/** Fluxos */
+/** ===== Fluxos ===== */
 async function startBuyFlow(to, eventId) {
   state.set(to, { step: 'awaiting_name', eventId });
   await sendText(to, 'Perfeito! Me diga seu *nome completo* para emitir o ingresso.');
 }
+
 async function confirmAndIssue(to, name, eventId) {
   try {
     const url = `${BASE_URL}/purchase/start?ev=${encodeURIComponent(eventId)}&to=${encodeURIComponent(to)}&name=${encodeURIComponent(name)}&qty=1`;
@@ -149,7 +179,7 @@ function parseCommandText(text = '') {
   return { cmd, kv };
 }
 
-/** Webhook (POST) */
+/** ===== Webhook ===== */
 waRouter.post('/webhook', async (req, res) => {
   try {
     const body = req.body;
@@ -206,7 +236,7 @@ waRouter.post('/webhook', async (req, res) => {
   }
 });
 
-/** Resolve action IDs */
+/** Resolve action IDs do menu/listas/botões */
 async function handleActionId(to, id, isAdmin) {
   if (id === 'menu_ver_eventos') { await sendEventsList(to); return; }
   if (id === 'menu_comprar_hello') { await startBuyFlow(to, 'hello-world-uberaba'); return; }
@@ -215,7 +245,7 @@ async function handleActionId(to, id, isAdmin) {
       to,
       'Organizador: crie e gerencie eventos pelo WhatsApp. Quer começar?',
       [
-        { id: 'org_criar', title: 'Criar evento' },
+        { id: 'org_criar',    title: 'Criar evento' },
         { id: 'org_comandos', title: 'Ver comandos' },
       ]
     );
@@ -233,7 +263,7 @@ async function handleActionId(to, id, isAdmin) {
       'Atalhos do organizador:',
       [
         { id: 'admin_ver_eventos', title: 'Listar eventos' },
-        { id: 'admin_link_hello', title: 'Link de compra (Hello)' },
+        { id: 'admin_link_hello',  title: 'Link de compra' },
       ]
     );
     return;
