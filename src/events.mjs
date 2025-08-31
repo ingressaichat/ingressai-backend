@@ -1,22 +1,45 @@
 import { Router } from 'express';
+
 export const eventsRouter = Router();
 
-// Catálogo mínimo (2 por cidade)
-const events = [
-  { id:'hello-world-uberaba', city:'Uberaba', title:'Hello World — Uberaba', date:'2025-09-15T20:00:00-03:00', price:20, image:'https://picsum.photos/seed/hello-uba/800/450', venue:'Espaço Central', stock:999 },
-  { id:'rock-na-praca-uberaba', city:'Uberaba', title:'Rock na Praça', date:'2025-09-20T18:00:00-03:00', price:0,  image:'https://picsum.photos/seed/rock-uba/800/450',  venue:'Praça Rui Barbosa', stock:999 },
-  { id:'techno-night-uberlandia', city:'Uberlândia', title:'Techno Night', date:'2025-10-05T23:30:00-03:00', price:35, image:'https://picsum.photos/seed/techno-udi/800/450', venue:'Club 42', stock:999 },
-  { id:'festival-gastronomia-udi', city:'Uberlândia', title:'Festival de Gastronomia', date:'2025-10-12T12:00:00-03:00', price:15, image:'https://picsum.photos/seed/food-udi/800/450',  venue:'Parque do Sabiá', stock:999 }
+export const EVENTS = [
+  {
+    id: "hello-world-uberaba",
+    title: "Hello World — Uberaba",
+    city: "Uberaba",
+    venue: "Local Secreto",
+    date: "2025-09-15T23:00:00-03:00",
+    price: 30.0,
+    currency: "BRL",
+    cover_image: "https://picsum.photos/seed/ingressai-hello/1200/800"
+  },
+  {
+    id: "hello-world-uberlandia",
+    title: "Hello World — Uberlândia",
+    city: "Uberlândia",
+    venue: "Clube Central",
+    date: "2025-09-20T22:00:00-03:00",
+    price: 35.0,
+    currency: "BRL",
+    cover_image: "https://picsum.photos/seed/ingressai-hello-2/1200/800"
+  }
 ];
 
-export function listEvents() { return events; }
-export function findEvent(id) { return events.find(e => e.id === id); }
+export function findEvent(id) {
+  return EVENTS.find(e => String(e.id) === String(id));
+}
 
-eventsRouter.get('/', (req, res) => {
-  const byCity = {};
-  for (const ev of events) {
-    byCity[ev.city] = byCity[ev.city] || [];
-    if (byCity[ev.city].length < 2) byCity[ev.city].push(ev);
-  }
-  res.json({ ok: true, cities: Object.keys(byCity), events: byCity });
+function buildWhatsAppDeeplink(ev, qty = 1, autopay = 1, name = "CONVIDADO") {
+  const number = process.env.PUBLIC_WHATSAPP || '5534999992747';
+  const txt = `ingressai:start ev=${ev} qty=${qty} autopay=${autopay} name=${name}`;
+  return `https://wa.me/${number}?text=${encodeURIComponent(txt)}`;
+}
+
+/** Vitrine — o front aceita items[] */
+eventsRouter.get('/events', (_req, res) => {
+  const items = EVENTS.map(e => ({
+    ...e,
+    wa_deeplink: buildWhatsAppDeeplink(e.id, 1, 1, 'CONVIDADO')
+  }));
+  res.json({ items });
 });
