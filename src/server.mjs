@@ -1,47 +1,73 @@
 import express from "express";
-import cors from "cors";
-import morgan from "morgan";
 import helmet from "helmet";
+import cors from "cors";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-
-import { seedIfEmpty } from "./db.mjs";
 import { log } from "./utils.mjs";
 
-import ticketsRouter from "./tickets.mjs";
-import { eventsRouter } from "./routes/events.mjs";
-import webhookRouter from "./routes/webhook.mjs";
+// Routers
+import eventsRouter from "./routes/events.mjs";
+import ticketsRouter from "./routes/tickets.mjs";
 import purchaseRouter from "./routes/purchase.mjs";
+import coreRouter from "./routes/core.mjs";
+import webhookRouter from "./routes/webhook.mjs";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname  = path.dirname(__filename);
+
+// ENV
+const PORT        = Number(process.env.PORT || 8080);
+const NODE_ENV    = process.env.NODE_ENV || "production";
+const ALLOWED     = (process.env.ALLOWED_ORIGINS || "https://ingressai.chat,http://localhost:5173")
+  .split(",").map(s => s.trim()).filter(Boolean);
+const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(__dirname, "uploads");
+
+// Ensure dirs
+try { fs.mkdirSync(UPLOADS_DIR, { recursive: true }); } catch {}
+
+// App
 const app = express();
-const PORT = Number(process.env.PORT || 8080);
 
-// middlewares
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" }
+// Segurança e CORS primeiro (não mexem no body)
+app.use(helmet({ crossOriginResourcePolicy: false }));
+app.use(cors({
+  origin: (origin, cb) => (!origin || ALLOWED.includes(origin)) ? cb(null, true) : cb(new Error("CORS")),
+  credentials: true
 }));
-app.use(cors());
-app.use(morgan("combined"));
-app.use(express.json({ limit: "2mb" })); // JSON normal
-// importante: o /webhook usa body raw — é aplicado no router
 
-// estáticos uploads
-const UPLOADS_DIR = process.env.UPLOADS_DIR || "/app/uploads";
-app.use("/uploads", express.static(UPLOADS_DIR, { fallthrough: true, etag: true, maxAge: "1h" }));
+// Static uploads
+app.use("/uploads", express.static(UPLOADS_DIR, { maxAge: "1y", etag: true }));
 
-// health
-app.get("/", (_req, res) => res.send("ok"));
-app.get("/healthz", (_req, res) => res.json({ ok: true }));
+/**
+ * MUITO IMPORTANTE:
+ * O /webhook precisa receber o corpo em RAW (Buffer) para validar a assinatura.
+ * Então montamos o router do webhook ANTES do express.json().
+ */
+app.use("/webhook", webhookRouter);
 
-// rotas
-app.use(eventsRouter);
-app.use(ticketsRouter);
-app.use(purchaseRouter);
-app.use(webhookRouter);
+// Agora sim os parsers globais para o resto das rotas
+app.use(express.json({ limit: "2mb" }));
+app.use(express.urlencoded({ extended: true }));
 
-// inicialização
-seedIfEmpty();
+// Demais rotas
+app.use("/events", eventsRouter);
+app.use("/tickets", ticketsRouter);
+app.use("/purchase", purchaseRouter);
+app.use("/", coreRouter);
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`ingressai-backend v${process.env.npm_package_version} ouvindo em http://0.0.0.0:${PORT}`);
+// 404
+app.use((req, res) => res.status(404).json({ ok: false, error: "Not found" }));
+
+// 500
+app.use((err, req, res, next) => {
+  log("server.error", { msg: err?.message });
+  res.status(500).json({ ok: false, error: "Internal error" });
 });
+
+// Start
+app.listen(PORT, "0.0.0.0", () => {
+  log("server.start", { port: PORT, env: NODE_ENV });
+});
+
+export default app;
