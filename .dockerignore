@@ -1,0 +1,13 @@
+# mantém src/ e .mjs!
+node_modules
+.npmrc
+.git
+.gitignore
+.env
+.DS_Store
+npm-debug.log*
+yarn-error.log*
+dist
+coverage
+.tmp
+.cache

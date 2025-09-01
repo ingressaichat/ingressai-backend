@@ -1,6 +1,8 @@
-import express from 'express';
-const app = express();
-app.get('/health', (_req, res) => res.status(200).send('ok'));
-app.get('/', (_req, res) => res.send('IngressAI backend up'));
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`[http] listening on ${PORT}`));
+import { createServer } from './server.mjs';
+import { config } from './config.mjs';
+
+const app = await createServer();
+const port = config.port;
+app.listen(port, () => {
+  console.log(`[ingressai] server on :${port}`);
+});

@@ -1,17 +1,28 @@
-import { join } from 'node:path';
+const env = (k, d = undefined) => process.env[k] ?? d;
 
-export const PORT = Number(process.env.PORT || 8080);
-export const BASE_URL = (process.env.BASE_URL || '').replace(/\/$/, '');
-export const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID || '';
-export const WABA_TOKEN = process.env.WABA_TOKEN || '';
-export const VERIFY_TOKEN = process.env.VERIFY_TOKEN || 'ingressai123';
+export const cfg = {
+  PORT: Number(env('PORT', 3000)),
+  BASE: env('APP_BASE_URL', `http://localhost:${env('PORT', 3000)}`),
 
-export const ADMIN_PHONES = (process.env.ADMIN_PHONES || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
+  ADMIN_NUMBERS: new Set(
+    (env('ADMIN_NUMBERS', '') || '')
+      .split(',').map(s => s.trim()).filter(Boolean)
+  ),
+  ADMIN_TOKEN: env('ADMIN_TOKEN', ''),
 
-// onde ficarão os arquivos estáticos servidos em /assets
-export const ASSETS_DIR = process.env.ASSETS_DIR || '/mnt/data/landing';
-export const EVENTS_ASSETS_DIR = join(ASSETS_DIR, 'events');
-export const PUBLIC_ASSETS_BASE = `${BASE_URL}/assets`;
+  META_ACCESS_TOKEN: env('META_ACCESS_TOKEN', ''),
+  PHONE_ID: env('WHATSAPP_PHONE_ID', ''),
+  VERIFY_TOKEN: env('WHATSAPP_VERIFY_TOKEN', 'ingressai-verify-token')
+};
+
+export function isAdminNumber(msisdn) {
+  return cfg.ADMIN_NUMBERS.has(String(msisdn));
+}
+
+export function checkAdmin(req) {
+  const token = req.get('X-Admin-Token');
+  if (token && token === cfg.ADMIN_TOKEN) return true;
+  const num = req.get('X-Admin');
+  if (num && isAdminNumber(num)) return true;
+  return false;
+}

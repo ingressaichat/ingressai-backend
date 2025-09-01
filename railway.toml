@@ -1,0 +1,7 @@
+[build]
+builder = "NIXPACKS"
+
+[env]
+NIXPACKS_NODE_VERSION = "22"
+NIXPACKS_NPM_INSTALL_CMD = "npm ci --omit=optional --no-audit --no-fund"
+NIXPACKS_LOG = "debug"
