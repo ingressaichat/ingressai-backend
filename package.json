@@ -1,26 +1,17 @@
 {
   "name": "ingressai-backend",
   "version": "0.3.6",
-  "private": true,
   "type": "module",
-  "description": "Backend IngressAI (Express + WhatsApp Cloud + PDF tickets)",
-  "engines": { "node": ">=22.0.0" },
   "scripts": {
-    "start": "node ./src/server.mjs",
-    "dev": "node --watch ./src/server.mjs",
-    "check": "node -e \"require('fs').accessSync('./src/server.mjs)\""
+    "start": "node ./src/server.mjs"
   },
   "dependencies": {
-    "axios": "^1.7.7",
-    "compression": "^1.7.4",
+    "axios": "^1.6.8",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "helmet": "^7.1.0",
-    "morgan": "^1.10.0",
     "multer": "^2.0.0",
-    "pdfkit": "^0.15.0",
-    "qrcode": "^1.5.4",
-    "uuid": "^9.0.1"
+    "pdfkit": "^0.13.0",
+    "qrcode": "^1.5.3"
   }
 }
