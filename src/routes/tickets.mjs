@@ -1,75 +1,290 @@
-import fs from "fs";
-import path from "path";
+import { Router } from "express";
 import PDFDocument from "pdfkit";
 import QRCode from "qrcode";
-import { Router } from "express";
-import { DB } from "./db.mjs";
-import { log } from "./utils.mjs";
+import axios from "axios";
+import crypto from "crypto";
+import { findEvent, pureEventName } from "../db.mjs";
+import { log } from "../utils.mjs";
 
-const ticketsRouter = Router();
-const UPLOADS_DIR = process.env.UPLOADS_DIR || "/app/uploads";
-const MEDIA_BASE_URL = (process.env.MEDIA_BASE_URL || "").replace(/\/$/, "");
+export const ticketsRouter = Router();
+const purchases = new Map(); // code -> { eventId, to, name, qty, createdAt }
 
-try { fs.mkdirSync(UPLOADS_DIR, { recursive: true }); } catch {}
+/* ===== ENV / WABA ===== */
+const TOKEN = process.env.WHATSAPP_TOKEN || process.env.WABA_TOKEN || "";
+const APP_SECRET = process.env.APP_SECRET || "";
+const BRAND = process.env.BRAND_NAME || "IngressAI";
+const LOGO_URL = process.env.LOGO_URL || "";
+const BASE_URL = (process.env.BASE_URL || "").replace(/\/$/,"");
+const GRAPH_API_BASE = process.env.GRAPH_API_BASE || "https://graph.facebook.com";
+const GRAPH_VERSION  = process.env.GRAPH_API_VERSION || "v23.0";
+const PHONE_ID       = process.env.PHONE_NUMBER_ID || process.env.PUBLIC_WABA || "";
 
-const filePath = (code) => path.join(UPLOADS_DIR, `ticket-${code}.pdf`);
-const fileUrl   = (code) => `${MEDIA_BASE_URL}/ticket-${code}.pdf`;
+const APP_PROOF = (APP_SECRET && TOKEN)
+  ? crypto.createHmac("sha256", APP_SECRET).update(TOKEN).digest("hex")
+  : null;
 
-async function generateTicketPDF({ code, event, name }) {
-  await new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: "A4", margin: 54 });
-    const out = fs.createWriteStream(filePath(code));
-    doc.pipe(out);
-
-    // Título
-    doc.fontSize(22).text(event.title, { align: "center" }).moveDown(0.6);
-    doc.fontSize(12).fillColor("#525866")
-      .text(`${event.city} • ${new Date(event.date).toLocaleString("pt-BR")}`, { align: "center" })
-      .moveDown(1.2);
-
-    // QR
-    const qrData = `https://ingressai.chat/t/${code}`;
-    QRCode.toDataURL(qrData, { margin: 1 })
-      .then(dataUrl => {
-        const png = Buffer.from(dataUrl.split(",")[1], "base64");
-        doc.image(png, doc.page.width/2 - 100, doc.y, { width: 200 });
-        doc.moveDown(1.6);
-        doc.fontSize(16).fillColor("#111827").text(name, { align: "center" });
-        doc.moveDown(0.4);
-        doc.fontSize(10).fillColor("#6B7280").text(code, { align: "center" });
-
-        doc.end();
-      })
-      .catch(reject);
-
-    out.on("finish", resolve);
-    out.on("error", reject);
-  });
-  return filePath(code);
+/* ===== Helpers ===== */
+async function fetchImageBuffer(url) {
+  if (!url) return null;
+  try {
+    const r = await axios.get(url, { responseType: "arraybuffer" });
+    return Buffer.from(r.data);
+  } catch { return null; }
+}
+function sanitizeFilename(s) {
+  return String(s).replace(/[^\p{L}\p{N}\-_\. ]/gu, "").slice(0, 64) || "ingresso";
 }
 
-// REST: (re)emitir por orderId
-ticketsRouter.post("/tickets/issue", async (req, res) => {
+/* ===== Preview QR ===== */
+ticketsRouter.get("/tickets/preview.png", async (req, res) => {
   try {
-    const { orderId } = req.body || {};
-    if (!orderId) return res.status(400).json({ error: "orderId required" });
+    const demo = req.query.code || "DEMO-CODE-123";
+    const png = await QRCode.toBuffer(`${BASE_URL}/validate?c=${encodeURIComponent(demo)}`);
+    res.set("Content-Type", "image/png").send(png);
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
 
-    const order = DB.PURCHASES.get(orderId);
-    if (!order) return res.status(404).json({ error: "purchase not found" });
-    const ev = DB.EVENTS.get(order.eventId);
-    if (!ev) return res.status(404).json({ error: "event not found" });
+/* ===== PDF ===== */
+ticketsRouter.get("/tickets/pdf", async (req, res) => {
+  const { code } = req.query;
+  const data = purchases.get(code);
+  if (!data) return res.status(404).send("Ticket não encontrado");
+  const ev = findEvent(data.eventId);
+  if (!ev) return res.status(404).send("Evento inválido");
 
-    if (!fs.existsSync(filePath(order.code))) {
-      await generateTicketPDF({ code: order.code, event: ev, name: order.name });
-      log("ticket.issue.generated", { code: order.code });
+  const filename = `${sanitizeFilename(ev.title)}_${code}.pdf`;
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+
+  // quadro retrato confortável no iPhone
+  const W = 432, H = 768;
+  const doc = new PDFDocument({ size: [W, H], margin: 0 });
+  doc.pipe(res);
+
+  // sistema visual
+  const PHI = 1.6180339887;
+  const BG = "#F5F7FA";
+  const CARD = "#FFFFFF";
+  const OUTLINE = "#E5E7EB";
+  const TXT = "#111111";
+  const META = "#6E6E73";
+  const META_LIGHT = "#8E8E93";
+  const ACCENT = "#007AFF";
+  const DIVIDER = "#C7C7CC";
+
+  // escala
+  const BASE = 12;
+  const scale = (n) => Math.round(BASE * Math.pow(PHI, n));
+  const f_title = scale(1.9);
+  const f_meta  = scale(0.2);
+  const f_name  = scale(1.4);
+  const f_venue = 12;
+  const f_foot  = scale(-0.3);
+  const rhythm  = (k=1) => Math.round(10 * Math.pow(PHI, k));
+  const pad     = Math.round(14 * PHI);
+
+  // fundo + card
+  doc.rect(0, 0, W, H).fill(BG);
+  const card = { x: 24, y: 24, w: W - 48, h: H - 48, r: 30 };
+  doc.save().fill(CARD).roundedRect(card.x, card.y, card.w, card.h, card.r).fill().restore();
+  doc.save().lineWidth(0.8).strokeColor(OUTLINE)
+    .roundedRect(card.x, card.y, card.w, card.h, card.r).stroke().restore();
+
+  // fluxo superior
+  let y = card.y + pad;
+
+  // LOGO
+  const logo = await fetchImageBuffer(LOGO_URL);
+  if (logo) {
+    const lw = 90;
+    const logoX = card.x + (card.w - lw) / 2;
+    doc.image(logo, logoX, y, { width: lw });
+    y += Math.round(lw / PHI) + 28;
+  } else {
+    doc.fillColor(TXT).font("Helvetica-Bold").fontSize(18)
+       .text(BRAND, card.x, y, { width: card.w, align: "center", characterSpacing: 0.2 });
+    y += rhythm(0.9);
+  }
+
+  const xL = card.x + pad;
+  const width = card.w - pad * 2;
+
+  // Título (somente nome do evento)
+  const title = pureEventName(ev);
+  doc.fillColor(TXT).font("Helvetica-Bold").fontSize(f_title);
+  const hTitle = doc.heightOfString(title, { width, align: "left" });
+  doc.text(title, xL, y, { width, align: "left", characterSpacing: 0.2, lineGap: 1 });
+  y += hTitle + Math.round(rhythm(1.1));
+
+  // Meta (cidade + data/hora)
+  const dt = new Date(ev.date);
+  const datePart = dt.toLocaleDateString("pt-BR", { day:"2-digit", month:"long", year:"numeric" });
+  const h = dt.getHours();
+  const m = dt.getMinutes();
+  const horaStr = m === 0 ? `${h} horas` : `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')} horas`;
+  const metaText = `${ev.city}, ${datePart} às ${horaStr}`;
+  doc.fillColor(META).font("Helvetica").fontSize(f_meta);
+  const hMeta = doc.heightOfString(metaText, { width, align: "left" });
+  doc.text(metaText, xL, y, { width, align: "left" });
+  y += hMeta + Math.round(rhythm(1.1));
+
+  // ===== Centralização do QR no espaço útil =====
+  const footTop = card.y + card.h - pad - Math.max(34, rhythm(0.7));
+  const divY    = footTop - Math.round(rhythm(0.25));
+
+  const nameText = data.name || "Participante";
+  doc.font("Helvetica-Bold").fontSize(f_name);
+  const hName = doc.heightOfString(nameText, { width: card.w, align: "center" });
+
+  const venueText = ev.venue || "";
+  let hVenue = 0;
+  if (venueText) {
+    doc.font("Helvetica").fontSize(f_venue);
+    hVenue = doc.heightOfString(venueText, { width: card.w, align: "center" });
+  }
+
+  const spaceAfterQR           = Math.round(rhythm(0.35));
+  const spaceBetweenNameVenue  = venueText ? Math.round(rhythm(0.25)) : 0;
+  const spaceVenueToDivider    = Math.round(rhythm(0.6));
+
+  const qrW = Math.round(card.w * 0.56);
+  const topEdge = y;
+  const reservedBelow = spaceAfterQR + hName + spaceBetweenNameVenue + hVenue + spaceVenueToDivider;
+  const available = (divY) - topEdge - reservedBelow;
+  const qrY = topEdge + Math.max(0, Math.floor((available - qrW) / 2));
+
+  const validateUrl = `${BASE_URL}/validate?c=${encodeURIComponent(code)}`;
+  const qrBuf = await QRCode.toBuffer(validateUrl, {
+    errorCorrectionLevel: "H",
+    margin: 1,
+    color: { dark: "#000000", light: "#FFFFFFFF" }
+  });
+  const qrX = card.x + (card.w - qrW) / 2;
+  doc.image(qrBuf, qrX, qrY, { width: qrW });
+
+  // Bloco abaixo do QR: nome + venue
+  let yAfterQR = qrY + qrW + spaceAfterQR;
+
+  doc.fillColor(ACCENT).font("Helvetica-Bold").fontSize(f_name)
+     .text(nameText, card.x, yAfterQR, { width: card.w, align: "center", characterSpacing: 0.08 });
+  yAfterQR += hName + spaceBetweenNameVenue;
+
+  if (venueText) {
+    doc.fillColor(TXT).font("Helvetica").fontSize(f_venue)
+       .text(venueText, card.x, yAfterQR, { width: card.w, align: "center" });
+    yAfterQR += hVenue;
+  }
+
+  // Divider + rodapé
+  doc.save().opacity(0.16).lineWidth(0.6).strokeColor(DIVIDER)
+    .moveTo(xL, divY).lineTo(xL + width, divY).stroke().restore();
+
+  doc.fillColor(META_LIGHT).font("Helvetica").fontSize(f_foot)
+     .text(`Código: ${code}\nQuantidade: ${data.qty}`, xL, footTop, { width, align: "left", lineGap: 2 });
+
+  doc.end();
+});
+
+/* ===== validação mock ===== */
+ticketsRouter.get("/validate", (req, res) => {
+  const code = String(req.query.c || req.query.code || "");
+  const data = purchases.get(code);
+  if (!data) return res.status(404).json({ ok: false, status: "invalid" });
+  return res.json({ ok: true, status: "valid", eventId: data.eventId, code });
+});
+
+/* ===== compra -> envia PDF como DOCUMENT ===== */
+ticketsRouter.get("/purchase/start", async (req, res) => {
+  try {
+    const { ev: eventId, to, name, qty = 1 } = req.query;
+    const ev = findEvent(String(eventId));
+    if (!ev) return res.status(404).json({ ok: false, error: "Evento inválido" });
+
+    const code = crypto.randomUUID(); // <<<<<< aqui!
+    const buyer = String(name || "Participante");
+    purchases.set(code, { code, eventId: ev.id, to, name: buyer, qty: Number(qty), createdAt: Date.now() });
+
+    const pdfUrl = `${BASE_URL}/tickets/pdf?code=${encodeURIComponent(code)}`;
+    const filename = `${sanitizeFilename(ev.title)}_${code}.pdf`;
+
+    if (PHONE_ID && TOKEN) {
+      await axios.post(
+        `${GRAPH_API_BASE}/${GRAPH_VERSION}/${PHONE_ID}/messages`,
+        {
+          messaging_product: "whatsapp",
+          to,
+          type: "document",
+          document: {
+            link: pdfUrl,
+            filename,
+            caption: `✅ Compra confirmada!\n${pureEventName(ev)} • ${ev.city}\nQuantidade: ${qty}`
+          }
+        },
+        {
+          headers: { "Content-Type": "application/json" },
+          params: { access_token: TOKEN, ...(APP_PROOF ? { appsecret_proof: APP_PROOF } : {}) }
+        }
+      );
+    } else {
+      log("waba.disabled", { to, pdfUrl });
     }
-    const url = fileUrl(order.code);
-    log("ticket.issue.ok", { orderId, url });
-    return res.json({ ok: true, url });
+
+    log("purchase", { code, pdfUrl, to });
+    res.json({ ok: true, code, pdfUrl });
   } catch (e) {
-    log("ticket.issue.fail", { error: e.message });
-    res.status(500).json({ error: e.message });
+    log("purchase.error", e?.response?.data || e.message);
+    res.status(500).json({ ok: false, error: "Falha na compra" });
   }
 });
 
-export default ticketsRouter;
+/* ===== reenvio do ingresso ===== */
+ticketsRouter.post("/tickets/issue", async (req, res) => {
+  try {
+    const { orderId: code, to } = req.body || {};
+    const data = purchases.get(code);
+    if (!data) return res.status(404).json({ ok:false, error:"Pedido não encontrado" });
+    const ev = findEvent(data.eventId);
+    if (!ev) return res.status(404).json({ ok:false, error:"Evento inválido" });
+
+    const pdfUrl = `${BASE_URL}/tickets/pdf?code=${encodeURIComponent(code)}`;
+    const filename = `${sanitizeFilename(ev.title)}_${code}.pdf`;
+
+    if (PHONE_ID && TOKEN) {
+      await axios.post(
+        `${GRAPH_API_BASE}/${GRAPH_VERSION}/${PHONE_ID}/messages`,
+        {
+          messaging_product: "whatsapp",
+          to: to || data.to,
+          type: "document",
+          document: {
+            link: pdfUrl,
+            filename,
+            caption: `📩 Reenvio do seu ingresso\n${pureEventName(ev)} • ${ev.city}\nQuantidade: ${data.qty}`
+          }
+        },
+        {
+          headers: { "Content-Type": "application/json" },
+          params: { access_token: TOKEN, ...(APP_PROOF ? { appsecret_proof: APP_PROOF } : {}) }
+        }
+      );
+    } else {
+      log("waba.disabled", { to: to || data.to, pdfUrl });
+    }
+
+    res.json({ ok:true });
+  } catch (e) {
+    log("tickets.issue.error", e?.response?.data || e.message);
+    res.status(500).json({ ok:false, error:"Falha ao reenviar" });
+  }
+});
+
+/* ===== atalho de teste ===== */
+ticketsRouter.get("/test/send-ticket", async (req, res) => {
+  const { to, ev = "hello-world-uberaba", name = "Tester" } = req.query;
+  if (!to) return res.status(400).json({ ok: false, error: "Parâmetro to é obrigatório" });
+  try {
+    const url = `${BASE_URL}/purchase/start?ev=${encodeURIComponent(ev)}&to=${encodeURIComponent(to)}&name=${encodeURIComponent(name)}&qty=1`;
+    await axios.get(url);
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});

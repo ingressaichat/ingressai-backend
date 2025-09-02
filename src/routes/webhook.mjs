@@ -1,4 +1,3 @@
-// src/routes/webhook.mjs
 import express, { Router } from "express";
 import axios from "axios";
 import crypto from "crypto";
@@ -384,8 +383,15 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
           if (dedupe.has(mid)) continue;
           dedupe.add(mid); setTimeout(()=>dedupe.delete(mid), 10*60*1000);
           try { await markRead(mid); } catch {}
-          try { await handleUserMessage({ from, message: msg, contacts: value?.contacts }); }
-          catch (e) {
+          try {
+            // Admin flow de criação (estados de texto)
+            const s = sessions.get(from) || {};
+            if (s.state?.startsWith("adm_create_") && msg.type === "text") {
+              await adminHandleCreation(from, msg.text?.body || "");
+            } else {
+              await handleUserMessage({ from, message: msg, contacts: value?.contacts });
+            }
+          } catch (e) {
             log("webhook.handle_error", e?.response?.data || e.message);
             try { await sendText(from, "Deu ruim aqui 😵‍💫. Manda “Ver eventos” que eu me encontro."); } catch {}
           }
