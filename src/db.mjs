@@ -1,56 +1,43 @@
-import { log } from "./utils.mjs";
+import crypto from "crypto";
 
-export const DB = {
+const DB = {
   EVENTS: new Map()
 };
 
-function seed() {
-  const id = "hello-world-uberaba";
-  if (!DB.EVENTS.has(id)) {
-    const ev = {
-      id,
-      title: "Hello World — Uberaba",
-      city: "Uberaba",
-      date: new Date(Date.now() + 7 * 24 * 3600 * 1000).toISOString(), // +7 dias
-      venue: "Espaço IngressAI",
-      statusLabel: "Em breve",
-      imageUrl: ""
-    };
-    DB.EVENTS.set(id, ev);
-    log("seed.event", { id: ev.id, title: ev.title });
-  }
+// helpers
+export function pureEventName(ev) {
+  // remove sufixo " — Cidade" se existir
+  return String(ev?.title || "").replace(/\s+—\s+.+$/, "");
 }
-seed();
 
 export function listEvents() {
-  return Array.from(DB.EVENTS.values()).sort(
-    (a, b) => new Date(a.date) - new Date(b.date)
-  );
+  return Array.from(DB.EVENTS.values()).map(e => ({ ...e }));
 }
-
 export function findEvent(id) {
-  return DB.EVENTS.get(String(id));
+  return DB.EVENTS.get(String(id)) || null;
 }
-
 export function updateEvent(id, patch) {
-  const prev = findEvent(id);
-  if (!prev) return false;
-  DB.EVENTS.set(id, { ...prev, ...patch });
+  const ev = findEvent(id);
+  if (!ev) return false;
+  const next = { ...ev, ...patch };
+  DB.EVENTS.set(ev.id, next);
   return true;
 }
-
 export function deleteEvent(id) {
   return DB.EVENTS.delete(String(id));
 }
 
-/** remove “— Cidade” do final do título, se existir */
-export function pureEventName(evOrTitle) {
-  const ev = typeof evOrTitle === "string" ? { title: evOrTitle, city: "" } : evOrTitle || {};
-  const title = ev.title || "";
-  const city = ev.city || "";
-  if (!title || !city) return title || "";
-  const esc = city.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`\\s*[—–-]\\s*${esc}\\s*$`, "i");
-  const cleaned = title.replace(pattern, "").trim();
-  return cleaned || title;
-}
+// seed básico
+(function seedIfEmpty() {
+  if (DB.EVENTS.size) return;
+  const id = crypto.randomBytes(4).toString("hex");
+  DB.EVENTS.set(id, {
+    id,
+    title: "Hello World — Uberaba",
+    city: "Uberaba-MG",
+    date: new Date(Date.now() + 48 * 3600 * 1000).toISOString(),
+    venue: "Espaço Demo",
+    statusLabel: "Último lote",
+    imageUrl: ""
+  });
+})();
