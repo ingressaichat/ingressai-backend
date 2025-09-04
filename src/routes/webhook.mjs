@@ -1,3 +1,8 @@
+// ================================================
+// File: src/routes/webhook.mjs (ATUALIZADO)
+// - Adiciona parseDateInputToISO para aceitar "dd/mm/aaaa hh:mm" e ISO
+// - Usa o parser no fluxo admin de criação de evento
+// ================================================
 import express, { Router } from "express";
 import axios from "axios";
 import crypto from "crypto";
@@ -12,13 +17,13 @@ const router = Router();
 /* ========================= ENV ========================= */
 const VERIFY_TOKEN   = process.env.VERIFY_TOKEN || "ingressai123";
 const BRAND          = process.env.BRAND_NAME || "IngressAI";
-const BASE_URL       = (process.env.BASE_URL || "").replace(/\/$/,"");
+const BASE_URL       = (process.env.BASE_URL || "").replace(/\/$/, "");
 const GRAPH_API_BASE = process.env.GRAPH_API_BASE || "https://graph.facebook.com";
 const GRAPH_VERSION  = process.env.GRAPH_API_VERSION || "v23.0";
 const PHONE_ID       = process.env.PHONE_NUMBER_ID || process.env.PUBLIC_WABA || "";
 const TOKEN          = process.env.WHATSAPP_TOKEN || process.env.WABA_TOKEN || "";
 const APP_SECRET     = process.env.APP_SECRET || "";
-const MEDIA_BASE_URL = (process.env.MEDIA_BASE_URL || BASE_URL).replace(/\/$/,"");
+const MEDIA_BASE_URL = (process.env.MEDIA_BASE_URL || BASE_URL).replace(/\/$/, "");
 const ALLOW_IMAGE_UPLOADS = String(process.env.ALLOW_IMAGE_UPLOADS || "1") === "1";
 const ADMIN_PHONES   = (process.env.ADMIN_PHONES || "")
   .split(",").map(s=>s.replace(/\D/g,"")).filter(Boolean);
@@ -84,6 +89,33 @@ const sendInteractiveList = (to, { header, body, footer, rows, title="Eventos" }
 
 async function markRead(message_id) {
   try { await send({ messaging_product:"whatsapp", status:"read", message_id }); } catch {}
+}
+
+/* ============= PARSE DE DATA (BR -> ISO) ============= */
+function parseDateInputToISO(input) {
+  const s = String(input || "").trim();
+
+  // ISO direto? (YYYY-MM-DD[THH:mm[:ss]][.sss][Z|±hh:mm])
+  const isoRx = /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?(?:\.\d+)?(?:Z|[+\-]\d{2}:?\d{2})?$/i;
+  if (isoRx.test(s)) {
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+
+  // dd/mm/aaaa [hh:mm]
+  const m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})(?:\s+(\d{1,2})(?::(\d{2}))?)?$/);
+  if (m) {
+    const [, dd, mm, yyyy, hh = "0", mi = "0"] = m;
+    const y = Number(yyyy), mon = Number(mm) - 1, day = Number(dd);
+    const H = Number(hh), M = Number(mi);
+    if (mon < 0 || mon > 11 || day < 1 || day > 31 || H < 0 || H > 23 || M < 0 || M > 59) return null;
+
+    // Interpreta como horário local de São Paulo (UTC-3)
+    const utcMs = Date.UTC(y, mon, day, H + 3, M, 0, 0);
+    return new Date(utcMs).toISOString();
+  }
+
+  return null;
 }
 
 /* ========================= UPLOADS (admin banner) ========================= */
@@ -216,9 +248,10 @@ async function adminHandleCreation(to, txt) {
     return sendText(to, "Data e hora? Formato `dd/mm/aaaa hh:mm` ou ISO.");
   }
   if (s.state === "adm_create_date") {
-    const iso = new Date(txt); if (isNaN(iso.getTime())) return sendText(to, "Não entendi a data. Tenta `15/09/2025 23:00`.");
+    const isoStr = parseDateInputToISO(txt);
+    if (!isoStr) return sendText(to, "Não entendi a data. Tenta `15/09/2025 23:00` ou `2025-09-15T23:00`.");
     const id = Math.random().toString(36).slice(2,10);
-    const ev = { id, title:d.title, city:d.city, date:iso.toISOString(), venue:"", statusLabel:"Em breve", imageUrl:"" };
+    const ev = { id, title:d.title, city:d.city, date: isoStr, venue:"", statusLabel:"Em breve", imageUrl:"" };
     const { DB } = await import("../db.mjs"); DB.EVENTS.set(id, ev);
     sessions.set(to, { ...s, state:"adm_post_create", pendingEventId:id, adminDraft:{} });
     await sendText(to, `Evento criado ✅\n• ${ev.title}\n• ${ev.city}, ${new Date(ev.date).toLocaleString("pt-BR")}\nID: ${id}`);
@@ -405,3 +438,62 @@ router.post("/", express.raw({ type: "application/json" }), async (req, res) => 
 });
 
 export default router;
+
+
+// ================================================
+// File: src/routes/events.mjs (ATUALIZADO – adiciona POST /events)
+// - Permite criar eventos via API (com parse BR -> ISO)
+// - Requer admin (checkAdmin) para POST
+// ================================================
+import { Router as RouterEvents } from "express";
+import { listEvents, findEvent, pureEventName } from "../db.mjs";
+import { checkAdmin } from "../config.mjs";
+
+export const eventsRouter = RouterEvents();
+
+// Helper de parse (mesmo do webhook)
+function parseDateInputToISO(input) {
+  const s = String(input || "").trim();
+  const isoRx = /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?(?:\.\d+)?(?:Z|[+\-]\d{2}:?\d{2})?$/i;
+  if (isoRx.test(s)) {
+    const d = new Date(s);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  const m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})(?:\s+(\d{1,2})(?::(\d{2}))?)?$/);
+  if (m) {
+    const [, dd, mm, yyyy, hh = "0", mi = "0"] = m;
+    const y = Number(yyyy), mon = Number(mm) - 1, day = Number(dd);
+    const H = Number(hh), M = Number(mi);
+    const utcMs = Date.UTC(y, mon, day, H + 3, M, 0, 0); // BRT -> UTC
+    return new Date(utcMs).toISOString();
+  }
+  return null;
+}
+
+// GETs existentes
+eventsRouter.get("/events", (_req, res) => {
+  res.json({ ok:true, events: listEvents() });
+});
+
+eventsRouter.get("/events/:id", (req, res) => {
+  const ev = findEvent(req.params.id);
+  if (!ev) return res.status(404).json({ ok:false, error:"not_found" });
+  res.json({ ok:true, event: ev });
+});
+
+// NOVO: criar evento
+eventsRouter.post("/events", async (req, res) => {
+  if (!checkAdmin(req)) return res.status(401).json({ ok:false, error: "unauthorized" });
+  const { title, city, date, venue = "", statusLabel = "Em breve", imageUrl = "" } = req.body || {};
+  if (!title || !city || !date) return res.status(400).json({ ok:false, error:"missing_fields", required:["title","city","date"] });
+
+  const iso = parseDateInputToISO(date);
+  if (!iso) return res.status(400).json({ ok:false, error:"invalid_date", hint:"Use dd/mm/aaaa hh:mm ou ISO 8601" });
+
+  const id = Math.random().toString(36).slice(2,10);
+  const ev = { id, title, city, date: iso, venue, statusLabel, imageUrl };
+  const { DB } = await import("../db.mjs");
+  DB.EVENTS.set(id, ev);
+
+  res.json({ ok:true, event: ev });
+});
