@@ -1,39 +1,30 @@
-import crypto from "crypto";
-import { log } from "./utils.mjs";
+// src/lib/db.mjs
+const EVENTS = [
+  {
+    id: "hello-world-uberaba",
+    title: "Hello World",
+    city: "Uberaba",
+    venue: "Local a definir",
+    date: "2025-09-20T23:00:00-03:00",
+    price: "R$ 20",
+    imageUrl: "https://ingressai.chat/hello-world.png"
+  },
+];
 
-function id8() { return crypto.randomBytes(6).toString("base64url").slice(0,8); }
+export function pureEventName(ev) { return String(ev?.title || "").trim(); }
 
-export const DB = {
-  EVENTS: new Map(),
-  PURCHASES: new Map()
-};
-
-// seed de exemplo
-export function seedIfEmpty() {
-  if (DB.EVENTS.size) return;
-  const id = "NvQPG16s";
-  const ev = {
-    id,
-    title: "Hello World — Uberaba",
-    city: "Uberaba-MG",
-    date: new Date(Date.now() + 48*3600*1000).toISOString(),
-    venue: "Espaço Demo",
-    statusLabel: "Último lote",
-    imageUrl: ""
-  };
-  DB.EVENTS.set(id, ev);
-  log("event.created", ev);
+export function listEvents(page = 1, size = 10) {
+  const p = Math.max(1, Number(page || 1));
+  const s = Math.max(1, Number(size || 10));
+  const sorted = [...EVENTS].sort((a,b)=>new Date(a.date)-new Date(b.date));
+  const total = sorted.length;
+  const totalPages = Math.max(1, Math.ceil(total / s));
+  const start = (p - 1) * s;
+  const items = sorted.slice(start, start + s);
+  return { page: p, size: s, total, totalPages, items };
 }
 
-export function newOrder({ eventId, name, phone, qty=1 }) {
-  const code = `ORD-${id8()}_${qty.toString().padStart(2,"0")}`;
-  DB.PURCHASES.set(code, { code, eventId, name, phone, qty, createdAt: new Date().toISOString() });
-  return DB.PURCHASES.get(code);
-}
-
-export function eventPublic(ev) {
-  return {
-    id: ev.id, title: ev.title, city: ev.city, date: ev.date,
-    venue: ev.venue, statusLabel: ev.statusLabel, imageUrl: ev.imageUrl
-  };
+export function findEvent(id) {
+  const key = String(id || "").trim();
+  return EVENTS.find(e => e.id === key) || null;
 }
