@@ -2,7 +2,7 @@
 import express from "express";
 import axios from "axios";
 import crypto from "crypto";
-import { log } from "..../utils.mjs"; // <- caminho correto (sobe um nível)
+import { log } from "../utils.mjs";
 
 const GRAPH_API_BASE = process.env.GRAPH_API_BASE || "https://graph.facebook.com";
 const GRAPH_VERSION  = process.env.GRAPH_API_VERSION || "v23.0";
@@ -16,12 +16,22 @@ const APP_PROOF = (APP_SECRET && TOKEN)
 
 export const waConfigured = Boolean(PHONE_ID && TOKEN);
 
+// ⚠️ Nada de params=function aqui. Use interceptor.
 const api = axios.create({
   baseURL: `${GRAPH_API_BASE}/${GRAPH_VERSION}/${PHONE_ID}`,
-  headers: { "Content-Type": "application/json" },
-  params: () => ({ access_token: TOKEN, ...(APP_PROOF ? { appsecret_proof: APP_PROOF } : {}) })
+  headers: { "Content-Type": "application/json" }
 });
 
+api.interceptors.request.use((config) => {
+  config.params = {
+    ...(config.params || {}),
+    access_token: TOKEN,
+    ...(APP_PROOF ? { appsecret_proof: APP_PROOF } : {})
+  };
+  return config;
+});
+
+/** Texto */
 export async function sendText(to, body) {
   if (!waConfigured) { log("[WA send mock:text]", { to, body }); return { ok:true, mock:true }; }
   try {
@@ -38,24 +48,28 @@ export async function sendText(to, body) {
   }
 }
 
+/** Lista interativa */
 export async function sendList(to, { header, body, button, sections, footer }) {
   if (!waConfigured) {
     log("[WA send mock:list]", { to, header, body, button, sections });
     return { ok:true, mock:true };
   }
   try {
+    const interactive = {
+      type: "list",
+      body: { text: body || "Selecione uma opção" },
+      action: { button: button || "Escolher", sections }
+    };
+    if (header) interactive.header = { type: "text", text: header };
+    if (footer) interactive.footer = { text: footer };
+
     const payload = {
       messaging_product: "whatsapp",
       to,
       type: "interactive",
-      interactive: {
-        type: "list",
-        header: header ? { type: "text", text: header } : undefined,
-        body: { text: body || "Selecione uma opção" },
-        footer: footer ? { text: footer } : undefined,
-        action: { button: button || "Escolher", sections }
-      }
+      interactive
     };
+
     const { data } = await api.post("/messages", payload);
     return { ok:true, data };
   } catch (e) {
@@ -64,6 +78,7 @@ export async function sendList(to, { header, body, button, sections, footer }) {
   }
 }
 
+/** Debug */
 export const waDebugRouter = express.Router();
 waDebugRouter.get("/", (_req, res) => {
   res.json({
