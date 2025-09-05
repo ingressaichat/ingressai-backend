@@ -1,467 +1,489 @@
-// ================================================
-// File: src/routes/webhook.mjs
-// ================================================
-import express, { Router } from "express";
-import axios from "axios";
-import crypto from "crypto";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+// src/routes/webhook.mjs
+import { Router } from "express";
+import { sendText, sendList } from "../lib/wa.mjs"; // caminho correto
+import { listEvents, findEvent, pureEventName, addEvent } from "../lib/db.mjs"; // addEvent
 import { log } from "../utils.mjs";
-import {
-  addEvent,
-  listEvents,
-  findEvent,
-  updateEvent,
-  deleteEvent,
-  pureEventName
-} from "../db.mjs";
+import axios from "axios";
+import fs from "fs/promises";
+import path from "path";
 
-const router = Router();
+/* ========= Config ========= */
+export const webhookRouter = Router();
 
-/* ========================= ENV ========================= */
-const VERIFY_TOKEN   = process.env.VERIFY_TOKEN || "ingressai123";
-const BRAND          = process.env.BRAND_NAME || "IngressAI";
-const BASE_URL       = (process.env.BASE_URL || "").replace(/\/$/, "");
+const BRAND = process.env.BRAND_NAME || "IngressAI";
+const ADMIN_PHONES = String(process.env.ADMIN_PHONES || "").split(",").map(s => s.trim()).filter(Boolean);
+const BASE_URL = (process.env.BASE_URL || "").replace(/\/$/, "");
+const UPLOADS_DIR = process.env.UPLOADS_DIR || "/app/uploads";
 const GRAPH_API_BASE = process.env.GRAPH_API_BASE || "https://graph.facebook.com";
 const GRAPH_VERSION  = process.env.GRAPH_API_VERSION || "v23.0";
-const PHONE_ID       = process.env.PHONE_NUMBER_ID || process.env.PUBLIC_WABA || "";
-const TOKEN          = process.env.WHATSAPP_TOKEN || process.env.WABA_TOKEN || "";
-const APP_SECRET     = process.env.APP_SECRET || "";
-const MEDIA_BASE_URL = (process.env.MEDIA_BASE_URL || BASE_URL).replace(/\/$/, "");
-const ALLOW_IMAGE_UPLOADS = String(process.env.ALLOW_IMAGE_UPLOADS || "1") === "1";
-const ADMIN_PHONES   = (process.env.ADMIN_PHONES || "")
-  .split(",").map(s=>s.replace(/\D/g,"")).filter(Boolean);
+const TOKEN = process.env.WHATSAPP_TOKEN || process.env.WABA_TOKEN || "";
 
-// Não derrubar o processo se faltar env:
-const WABA_ENABLED = Boolean(PHONE_ID && TOKEN);
-
-/* ========================= STATE ========================= */
-const sessions = new Map();
-const dedupe   = new Set();
-
-/* ========================= HELPERS ========================= */
-const isAdmin         = (wa) => ADMIN_PHONES.includes(String(wa||"").replace(/\D/g,""));
-const normalizePhone  = (s) => String(s||"").replace(/\D/g,"");
-const safeProfileName = (contacts) => { try { return String(contacts?.[0]?.profile?.name || "").trim(); } catch { return ""; } };
-
-// assinatura do app (opcional, mas ajuda no “appsecret_proof”)
-const appProof = (token) => (APP_SECRET && token)
-  ? crypto.createHmac("sha256", APP_SECRET).update(token).digest("hex")
-  : null;
-
-const waParams = () => {
-  const p = { access_token: TOKEN };
-  const proof = appProof(TOKEN);
-  if (proof) p.appsecret_proof = proof;
-  return p;
+/* ========= Helpers ========= */
+const onlyDigits = s => String(s || "").replace(/\D/g, "");
+const isAdmin = (from) => ADMIN_PHONES.some(a => onlyDigits(a) === onlyDigits(from));
+const fit = (s, max = 24) => (String(s || "").length <= max ? String(s || "") : (String(s || "").slice(0, max - 1) + "…"));
+const fmtDate = (iso) => {
+  const d = new Date(iso);
+  const dia = d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit" });
+  const h = d.getHours();
+  const m = d.getMinutes();
+  const hora = m === 0 ? `${h}h` : `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+  return `${dia} ${hora}`;
 };
 
-const graph = axios.create({
-  baseURL: `${GRAPH_API_BASE}/${GRAPH_VERSION}/${PHONE_ID}`,
-  timeout: 15000
-});
-
-async function send(payload) {
-  if (!WABA_ENABLED) { log("waba.disabled"); return { disabled: true }; }
-  const res = await graph.post("/messages", payload, {
-    params: waParams(),
-    headers: { "Content-Type": "application/json" }
-  });
-  return res.data;
+// parse "20/09 23:00" -> ISO com -03:00
+function parsePtDate(str) {
+  const s = String(str || "").trim();
+  const re = /(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?\s*(\d{1,2})(?::(\d{2}))?/;
+  const m = s.match(re);
+  if (!m) return null;
+  const dd = Number(m[1]), MM = Number(m[2]);
+  let yyyy = m[3] ? Number(m[3]) : (new Date()).getFullYear();
+  if (yyyy < 100) yyyy += 2000;
+  const HH = Number(m[4] || 20), mm = Number(m[5] || 0);
+  const pad = (n) => String(n).padStart(2,"0");
+  return `${yyyy}-${pad(MM)}-${pad(dd)}T${pad(HH)}:${pad(mm)}:00-03:00`;
 }
 
-const sendText = (to, body) =>
-  send({ messaging_product: "whatsapp", to, type: "text",
-         text: { body: String(body).slice(0,4096), preview_url: false } });
+/* ========= Menus por LISTA ========= */
 
-const sendButtons = (to, { body, buttons }) => {
-  const rows = buttons.slice(0,3).map((b,i)=>({ type:"reply", reply:{ id:b.id||`btn_${i+1}`, title:b.title.slice(0,20)}}));
-  return send({ messaging_product:"whatsapp", to, type:"interactive",
-    interactive:{ type:"button", body:{ text: body }, action:{ buttons: rows } }});
-};
-
-const sendInteractiveList = (to, { header, body, footer, rows, title="Eventos" }) =>
-  send({
-    messaging_product: "whatsapp", to, type: "interactive",
-    interactive: {
-      type: "list",
-      header: header ? { type:"text", text: header } : undefined,
-      body: { text: body },
-      footer: footer ? { text: footer } : undefined,
-      action: { button: "Ver opções", sections: [{ title, rows: rows.slice(0,10) }] }
-    }
-  });
-
-async function markRead(message_id) {
-  try { await send({ messaging_product:"whatsapp", status:"read", message_id }); } catch {}
-}
-
-/* ============= PARSE DE DATA (BR -> ISO) ============= */
-/**
- * Aceita:
- *   - "dd/mm/aaaa hh:mm"
- *   - "dd/mm/aaaa" (assume 00:00)
- *   - ISO 8601 (passa direto)
- * Retorna ISO (UTC) ou null se inválido.
- */
-function parseDateInputToISO(input) {
-  const s = String(input || "").trim();
-
-  // ISO direto? (YYYY-MM-DD[THH:mm[:ss]][.sss][Z|±hh:mm])
-  const isoRx = /^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?(?:\.\d+)?(?:Z|[+\-]\d{2}:?\d{2})?$/i;
-  if (isoRx.test(s)) {
-    const d = new Date(s);
-    return isNaN(d.getTime()) ? null : d.toISOString();
-  }
-
-  // dd/mm/aaaa [hh:mm]
-  const m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})(?:\s+(\d{1,2})(?::(\d{2}))?)?$/);
-  if (m) {
-    const [, dd, mm, yyyy, hh = "0", mi = "0"] = m;
-    const y = Number(yyyy), mon = Number(mm) - 1, day = Number(dd);
-    const H = Number(hh), M = Number(mi);
-    if (mon < 0 || mon > 11 || day < 1 || day > 31 || H < 0 || H > 23 || M < 0 || M > 59) return null;
-
-    // Interpreta como horário local de São Paulo (UTC-3); converte para UTC
-    const utcMs = Date.UTC(y, mon, day, H + 3, M, 0, 0);
-    return new Date(utcMs).toISOString();
-  }
-
-  return null;
-}
-
-/* ========================= UPLOADS (admin banner) ========================= */
-const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
-const UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(__dirname, "..", "uploads");
-try { fs.mkdirSync(UPLOADS_DIR, { recursive: true }); } catch {}
-
-async function downloadMediaToUploads(mediaId) {
-  if (!ALLOW_IMAGE_UPLOADS) throw new Error("Uploads desabilitados");
-  // meta
-  const meta = await axios.get(`${GRAPH_API_BASE}/${GRAPH_VERSION}/${mediaId}`, { params: waParams(), timeout: 10000 });
-  const url  = meta.data?.url;
-  const mime = meta.data?.mime_type || "image/jpeg";
-  const ext  = (mime.split("/")[1] || "jpg").split(";")[0];
-  if (!url) throw new Error("URL vazia");
-  // conteúdo
-  const r = await axios.get(url, { responseType: "arraybuffer", headers:{ Authorization:`Bearer ${TOKEN}` }, timeout: 20000 });
-  const file = `${mediaId}.${ext}`;
-  const dest = path.join(UPLOADS_DIR, file);
-  fs.writeFileSync(dest, r.data);
-  return `${MEDIA_BASE_URL}/uploads/${encodeURIComponent(file)}`;
-}
-
-/* ========================= UX BOT ========================= */
-const BR_TZ = "America/Sao_Paulo";
-
-function fmtBR(dtISO) {
-  return new Date(dtISO).toLocaleString("pt-BR", { timeZone: BR_TZ });
-}
-
-async function greet(to, profileName="") {
-  const hi = profileName ? `Fala, ${profileName.split(" ")[0]}!` : "Fala aí!";
-  await sendText(to, `${hi} Eu sou o bot da ${BRAND}. Vendo ingressos aqui no WhatsApp. 🚀`);
-  const admin = isAdmin(to);
-  await sendButtons(to, {
-    body: `Como posso te ajudar?\n\n• Ver eventos\n• Meus ingressos\n• Suporte${admin ? "\n• Admin" : ""}`,
-    buttons: [
-      { id: "menu_ver_eventos", title: "Ver eventos" },
-      { id: "menu_meus_ing",    title: "Meus ing." },
-      { id: admin ? "menu_admin" : "menu_suporte", title: admin ? "Admin" : "Suporte" }
-    ]
-  });
-}
-
-function rowFromEvent(ev) {
-  const sub = [ev.city, fmtBR(ev.date)].filter(Boolean).join(" • ");
-  return { id: `ev:${ev.id}`, title: pureEventName(ev), description: sub.slice(0,72) };
-}
-
-async function showEventsList(to) {
-  const items = listEvents();
-  if (!items.length) return sendText(to, "Ainda não publicamos eventos. ✨");
-  const rows = items.map(rowFromEvent);
-  await sendInteractiveList(to, { header: "Vitrine", body: "Escolha um evento:", rows });
-}
-
-async function finalizePurchase(to, evId, name) {
-  try {
-    const res  = await axios.get(`${BASE_URL}/purchase/start`, { params: { ev: evId, to, name, qty: 1 }, timeout: 20000 });
-    const data = res.data;
-    if (data?.ok) {
-      const sess = sessions.get(to) || {};
-      sessions.set(to, { ...sess, state:"idle", lastOrderId: data.code, lastPdfUrl: data.pdfUrl, buyerName: name });
-      await sendText(to, `✅ Compra confirmada!\nNome: ${name}\nTe mandei o PDF aqui (se não aparecer, posso reenviar em “Meus ing.”).`);
-      await sendButtons(to, { body: "Quer mais alguma coisa?", buttons: [
-        { id:"menu_ver_eventos", title:"Ver eventos" },
-        { id:"menu_meus_ing",    title:"Meus ing." }
-      ]});
-    } else {
-      throw new Error(data?.error || "Falha ao emitir");
-    }
-  } catch (e) {
-    log("purchase.start.fail", e?.response?.data || e.message);
-    await sendText(to, "Não consegui emitir agora 😓. Tenta de novo em instantes.");
-  }
-}
-
-async function handleMeusIngressos(to) {
-  const sess = sessions.get(to);
-  if (!sess?.lastOrderId) return sendText(to, "Ainda não vi compras por este número. Manda **“Ver eventos”** para começar. 😉");
-  try {
-    await axios.post(`${BASE_URL}/tickets/issue`, { orderId: sess.lastOrderId, to }, {
-      headers: { "Content-Type": "application/json" }, timeout: 15000
+async function sendMainMenu(to, adminFlag) {
+  const sections = [
+    {
+      title: "Explorar",
+      rows: [
+        { id: "menu:events",    title: "Ver eventos" },
+        { id: "menu:mytickets", title: "Meus ingressos" },
+        { id: "menu:support",   title: "Suporte" },
+      ],
+    },
+  ];
+  if (adminFlag) {
+    sections.push({
+      title: "Admin",
+      rows: [
+        { id: "admin:panel",  title: "Painel do admin" },
+        { id: "admin:create", title: "Criar evento (assistente)" }, // <- novo fluxo simples
+      ],
     });
-    await sendText(to, "Reenviei seu ingresso aqui no chat. 📩");
-  } catch {
-    await sendText(to, "Tentei reenviar mas falhou agora. Tenta novamente.");
   }
+
+  await sendList(to, {
+    header: `${BRAND}`,
+    body: "Selecione uma opção abaixo:",
+    button: "Escolher",
+    sections,
+  });
 }
 
-async function handleStartWithEvent({ from, profileName, evId, maybeName }) {
+async function sendEventsList(to, page = 1, size = 5) {
+  const { items, totalPages, page: p } = listEvents(page, size);
+
+  const rows = items.map(ev => {
+    const title = fit(pureEventName(ev), 24);
+    const desc  = `${ev.city} · ${fmtDate(ev.date)}`;
+    return { id: `events:view:${ev.id}`, title, description: desc };
+  });
+
+  const navRows = [];
+  if (p > 1) navRows.push({ id: `events:page:${p - 1}`, title: "« Página anterior" });
+  if (p < totalPages) navRows.push({ id: `events:page:${p + 1}`, title: "Próxima página »" });
+
+  const sections = [{ title: "Eventos em destaque", rows }];
+  if (navRows.length) sections.push({ title: "Navegar", rows: navRows });
+
+  await sendList(to, {
+    header: "Eventos",
+    body: "Escolha um evento para ver detalhes:",
+    button: "Ver opções",
+    sections,
+  });
+}
+
+async function sendEventActions(to, evId) {
   const ev = findEvent(evId);
-  if (!ev) return sendText(from, "Não encontrei o evento. Manda “Ver eventos”.");
-  const sess = sessions.get(from) || {};
-  sessions.set(from, { ...sess, pendingEventId: ev.id, state: "awaiting_name" });
-  const guessed = (maybeName || profileName || "").trim();
-  if (guessed) {
-    await sendButtons(from, {
-      body: `Comprar **${pureEventName(ev)}**?\nPosso usar este nome no ingresso:\n• ${guessed}`,
-      buttons: [{ id:"confirm_name_yes", title:"Sim" }, { id:"confirm_name_no", title:"Outro nome" }]
-    });
-    sessions.set(from, { ...sessions.get(from), candidateName: guessed });
-  } else {
-    await sendText(from, `Como devo escrever **seu nome** no ingresso do ${pureEventName(ev)}?`);
-  }
-}
+  if (!ev) { await sendText(to, "Evento não encontrado."); return; }
+  const title = fit(pureEventName(ev), 24);
+  const meta = `${ev.city} · ${fmtDate(ev.date)} · ${ev.price || ""}`.replace(/\s+·\s+$/,"");
 
-/* ========================= ADMIN ========================= */
-async function adminMenu(to) {
-  await sendButtons(to, { body: "Painel Admin", buttons: [
-    { id:"admin_criar",   title:"Criar evento" },
-    { id:"admin_midia",   title:"Definir mídia" },
-    { id:"admin_excluir", title:"Excluir" }
-  ]});
-  await sendButtons(to, { body: "Mais opções", buttons: [
-    { id:"menu_ver_eventos", title:"Vitrine" }
-  ]});
-}
-
-async function adminStartCreate(to) {
-  const s = sessions.get(to) || {};
-  sessions.set(to, { ...s, state:"adm_create_title", adminDraft:{} });
-  await sendText(to, "Vamos criar um evento.\nQual **título**?");
-}
-
-async function adminHandleCreation(to, txt) {
-  const s = sessions.get(to) || {};
-  const d = s.adminDraft || {};
-  if (s.state === "adm_create_title") {
-    d.title = txt; sessions.set(to, { ...s, state:"adm_create_city", adminDraft:d });
-    return sendText(to, "Qual **cidade**?");
-  }
-  if (s.state === "adm_create_city") {
-    d.city = txt; sessions.set(to, { ...s, state:"adm_create_date", adminDraft:d });
-    return sendText(to, "Data e hora? Formato `dd/mm/aaaa hh:mm` ou ISO.");
-  }
-  if (s.state === "adm_create_date") {
-    const isoStr = parseDateInputToISO(txt);
-    if (!isoStr) return sendText(to, "Não entendi a data. Tenta `15/09/2025 23:00` ou `2025-09-15T23:00`.");
-    const id = Math.random().toString(36).slice(2,10);
-    const ev = { id, title:d.title, city:d.city, date: isoStr, venue:"", statusLabel:"Em breve", imageUrl:"" };
-    await addEvent(ev); // <<<<<< ponto chave: não usa DB direto
-    sessions.set(to, { ...s, state:"adm_post_create", pendingEventId:id, adminDraft:{} });
-    await sendText(to, `Evento criado ✅\n• ${ev.title}\n• ${ev.city}, ${fmtBR(ev.date)}\nID: ${id}`);
-    return sendButtons(to, { body:"Definir mídia agora?", buttons:[
-      { id:"admin_set_media_now", title:"Definir mídia" },
-      { id:"menu_ver_eventos",    title:"Ver vitrine" }
-    ]});
-  }
-}
-
-async function adminSelectEventForMedia(to) {
-  const rows = listEvents().slice(0,10).map(ev=>({
-    id:`adm_media:${ev.id}`,
-    title: pureEventName(ev),
-    description: `${ev.city} • ${fmtBR(ev.date)}`
-  }));
-  await sendInteractiveList(to, { header:"Definir mídia", body:"Escolha o evento. Depois envie a imagem.", rows, title:"Eventos (mídia)" });
-}
-async function adminSelectEventForDelete(to) {
-  const rows = listEvents().slice(0,10).map(ev=>({
-    id:`adm_del:${ev.id}`,
-    title:`🗑 ${pureEventName(ev)}`,
-    description: `${ev.city} • ${fmtBR(ev.date)}`
-  }));
-  await sendInteractiveList(to, { header:"Excluir evento", body:"Qual evento deseja remover?", rows, title:"Remover" });
-}
-
-/* ========================= DISPATCHER ========================= */
-function norm(s){ return String(s||"").replace(/\s+/g," ").trim(); }
-
-async function handleUserMessage({ from, message, contacts }) {
-  const profileName = safeProfileName(contacts);
-  const admin = isAdmin(from);
-  const sess  = sessions.get(from) || {};
-  sessions.set(from, { ...sess });
-
-  const type = message.type;
-
-  // interactive
-  if (type === "interactive") {
-    const kind = message.interactive?.type;
-    if (kind === "button_reply") {
-      const id = message.interactive?.button_reply?.id || "";
-      if (id === "menu_ver_eventos") return showEventsList(from);
-      if (id === "menu_meus_ing")   return handleMeusIngressos(from);
-      if (id === "menu_suporte")    return sendText(from, `Fale com o suporte: https://wa.me/${process.env.PUBLIC_WHATSAPP || "5534999992747"}`);
-      if (id === "confirm_name_yes") {
-        const name = sess.candidateName || profileName || "Participante";
-        const evId = sess.pendingEventId;
-        if (!evId) return sendText(from, "Vamos lá! Manda “Ver eventos”.");
-        return finalizePurchase(from, evId, name);
-      }
-      if (id === "confirm_name_no") {
-        sessions.set(from, { ...sess, state:"awaiting_name" });
-        return sendText(from, "Sem problema! Qual nome devo colocar no ingresso?");
-      }
-      if (admin && id === "menu_admin")       return adminMenu(from);
-      if (admin && id === "admin_criar")      return adminStartCreate(from);
-      if (admin && id === "admin_midia")      return adminSelectEventForMedia(from);
-      if (admin && id === "admin_excluir")    return adminSelectEventForDelete(from);
-      if (admin && id === "admin_set_media_now") {
-        const s = sessions.get(from) || {};
-        if (!s.pendingEventId) return adminSelectEventForMedia(from);
-        sessions.set(from, { ...s, state:"adm_wait_media" });
-        return sendText(from, "Envie a imagem do evento (banner).");
-      }
-    }
-    if (kind === "list_reply") {
-      const id = message.interactive?.list_reply?.id || "";
-      if (id.startsWith("ev:"))        return handleStartWithEvent({ from, profileName, evId: id.slice(3) });
-      if (admin && id.startsWith("adm_media:")) {
-        const evId = id.split(":")[1];
-        const s = sessions.get(from) || {};
-        sessions.set(from, { ...s, state:"adm_wait_media", pendingEventId: evId });
-        return sendText(from, "Agora **envie a imagem** do evento.");
-      }
-      if (admin && id.startsWith("adm_del:")) {
-        const evId = id.split(":")[1];
-        const ok = deleteEvent(evId);
-        return sendText(from, ok ? "Evento removido ✅" : "Não achei esse evento.");
-      }
-    }
-  }
-
-  // media — admin define banner
-  if (type === "image" && admin) {
-    const s = sessions.get(from) || {};
-    if (s.state === "adm_wait_media") {
-      try {
-        const mediaId = message.image?.id;
-        if (!mediaId) throw new Error("image.id ausente");
-        const url = await downloadMediaToUploads(mediaId);
-        updateEvent(s.pendingEventId, { imageUrl: url });
-        await sendText(from, `Banner salvo ✅\n${url}`);
-        sessions.set(from, { ...s, state:"idle" });
-      } catch (e) {
-        log("admin.media.error", e?.response?.data || e.message);
-        await sendText(from, "Não consegui salvar a imagem agora. Tenta novamente.");
-      }
-      return;
-    }
-  }
-
-  // texto / estados
-  let text = "";
-  if (type === "text") text = message.text?.body || "";
-  text = norm(text);
-
-  if (sess.state === "awaiting_name" && sess.pendingEventId) {
-    const name = text || profileName || "Participante";
-    return finalizePurchase(from, sess.pendingEventId, name);
-  }
-
-  const t = text.toLowerCase();
-  if (["oi","olá","ola","bom dia","boa tarde","boa noite","/start","menu"].includes(t)) return greet(from, profileName);
-  if (!admin && (t.includes("ver eventos") || t === "eventos" || t === "vitrine")) return showEventsList(from);
-  if (!admin && (t.includes("meus ingressos") || t === "meus ing." || t === "ingresso")) return handleMeusIngressos(from);
-  if (!admin && (t.includes("suporte") || t.includes("ajuda"))) return sendText(from, `Pode chamar: https://wa.me/${process.env.PUBLIC_WHATSAPP || "5534999992747"}`);
-  if (admin && (t === "admin" || t === "/admin")) return adminMenu(from);
-
-  // fallback
-  if (admin) return adminMenu(from);
-  return sendButtons(from, {
-    body: "Posso te ajudar com:",
-    buttons: [
-      { id:"menu_ver_eventos", title:"Ver eventos" },
-      { id:"menu_meus_ing",    title:"Meus ing." },
-      { id:"menu_suporte",     title:"Suporte" }
-    ]
+  await sendList(to, {
+    header: title,
+    body: `${meta}\n\nO que você deseja fazer?`,
+    button: "Escolher",
+    sections: [{
+      title: "Ações",
+      rows: [
+        { id: `buy:${ev.id}`,  title: "Comprar ingresso" },
+        { id: `events:page:1`, title: "Voltar aos eventos" },
+      ],
+    }],
   });
 }
 
-/* ========================= ROUTES ========================= */
+/* ========= Admin: Assistente de criação ========= */
 
-// GET /webhook (verify)
-router.get("/", (req, res) => {
+// Sessões de criação por admin
+const adminSessions = new Map(); // from -> { step, ev }
+
+const CITIES = ["Uberaba", "São Paulo", "Belo Horizonte", "Rio de Janeiro", "Outra cidade"];
+
+async function startCreateWizard(to) {
+  adminSessions.set(to, { step: "image", ev: { city: "Uberaba", price: "R$ 20" } });
+  await sendList(to, {
+    header: "Criar evento",
+    body: "Envie a CAPA agora (foto) — ou escolha pular:",
+    button: "Escolher",
+    sections: [{
+      title: "Capa (opcional)",
+      rows: [
+        { id: "ac:img:skip", title: "Pular imagem" },
+        { id: "ac:cancel",   title: "Cancelar" },
+      ]
+    }]
+  });
+}
+
+async function askTitle(to) {
+  const s = adminSessions.get(to); if (!s) return;
+  s.step = "title"; adminSessions.set(to, s);
+  await sendText(to, "📝 *Título do evento?*\nEx: _Hello World_.");
+}
+
+async function askCity(to) {
+  const s = adminSessions.get(to); if (!s) return;
+  s.step = "city"; adminSessions.set(to, s);
+  await sendList(to, {
+    header: "Cidade",
+    body: "Escolha a cidade do evento:",
+    button: "Escolher",
+    sections: [{
+      title: "Cidades",
+      rows: CITIES.map(c => ({ id: `ac:city:${c}`, title: c })),
+    }]
+  });
+}
+
+async function askDate(to) {
+  const s = adminSessions.get(to); if (!s) return;
+  s.step = "date"; adminSessions.set(to, s);
+  await sendText(to, "📅 *Data e hora?*\nFormato rápido: _20/09 23:00_.");
+}
+
+async function askPrice(to) {
+  const s = adminSessions.get(to); if (!s) return;
+  s.step = "price"; adminSessions.set(to, s);
+  await sendList(to, {
+    header: "Preço",
+    body: "Selecione um preço ou digite em reais (ex: 35):",
+    button: "Escolher",
+    sections: [{
+      title: "Sugestões",
+      rows: [
+        { id: "ac:price:R$ 10", title: "R$ 10" },
+        { id: "ac:price:R$ 20", title: "R$ 20" },
+        { id: "ac:price:R$ 30", title: "R$ 30" },
+        { id: "ac:price:manual", title: "Vou digitar" },
+      ]
+    }]
+  });
+}
+
+async function confirmPublish(to) {
+  const s = adminSessions.get(to); if (!s) return;
+  s.step = "confirm"; adminSessions.set(to, s);
+  const ev = s.ev;
+  const resumo = [
+    `*${ev.title || "(sem título)"}*`,
+    `${ev.city || "Cidade?"} · ${ev.date ? fmtDate(ev.date) : "Data?"} · ${ev.price || ""}`
+  ].join("\n");
+
+  await sendList(to, {
+    header: "Publicar evento?",
+    body: `${resumo}\n\nCapa: ${ev.imageUrl ? "✅" : "—"}`,
+    button: "Escolher",
+    sections: [{
+      title: "Confirmar",
+      rows: [
+        { id: "ac:confirm:publish", title: "✅ Publicar" },
+        { id: "ac:confirm:cancel",  title: "Cancelar" }
+      ]
+    }]
+  });
+}
+
+async function finishPublish(to) {
+  const s = adminSessions.get(to); if (!s) return;
+  const ev = s.ev;
+  if (!ev.title || !ev.city || !ev.date) {
+    await sendText(to, "Faltou título, cidade ou data. Voltando ao início.");
+    await startCreateWizard(to);
+    return;
+  }
+  const created = addEvent({
+    title: ev.title,
+    city: ev.city,
+    venue: ev.venue || "",
+    date: ev.date,
+    price: ev.price || "",
+    imageUrl: ev.imageUrl || ""
+  });
+  adminSessions.delete(to);
+  await sendText(to, `✅ Publicado: *${created.title}* — ${created.city} (${fmtDate(created.date)})`);
+  await sendEventActions(to, created.id);
+}
+
+// salvar mídia do WhatsApp em /uploads e retornar URL pública
+async function downloadMediaToUploads(mediaId) {
+  if (!TOKEN || !mediaId) return null;
+  try {
+    const meta = await axios.get(`${GRAPH_API_BASE}/${GRAPH_VERSION}/${mediaId}`, {
+      params: { access_token: TOKEN }
+    }).then(r => r.data);
+    const url = meta?.url;
+    const mime = meta?.mime_type || "image/jpeg";
+    if (!url) return null;
+
+    const buf = await axios.get(url, {
+      responseType: "arraybuffer",
+      headers: { Authorization: `Bearer ${TOKEN}` }
+    }).then(r => Buffer.from(r.data));
+
+    const ext = mime.includes("png") ? "png" : (mime.includes("webp") ? "webp" : "jpg");
+    const dir = path.join(UPLOADS_DIR, "media");
+    await fs.mkdir(dir, { recursive: true }).catch(() => {});
+    const file = path.join(dir, `wa-${mediaId}.${ext}`);
+    await fs.writeFile(file, buf);
+    return `${BASE_URL}/uploads/media/wa-${mediaId}.${ext}`;
+  } catch (e) {
+    log("media.download.error", e?.response?.data || e.message);
+    return null;
+  }
+}
+
+/* ========= Ações (comprar - mock para demo) ========= */
+
+async function startPurchase(to, evId) {
+  try {
+    const url = `${BASE_URL}/purchase/start?ev=${encodeURIComponent(evId)}&to=${encodeURIComponent(to)}&name=${encodeURIComponent("Cliente")}&qty=1`;
+    await axios.get(url);
+    await sendText(to, "✅ Compra iniciada! Você receberá seu ingresso em instantes.");
+  } catch (e) {
+    log("purchase.start.error", e?.response?.data || e.message);
+    await sendText(to, "Não consegui iniciar a compra agora. Tente novamente em instantes.");
+  }
+}
+
+/* ========= WEBHOOK ========= */
+
+// GET verify
+webhookRouter.get("/", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-  if (mode === "subscribe" && token === VERIFY_TOKEN) return res.status(200).send(challenge);
-  return res.sendStatus(403);
+  const VERIFY_TOKEN = process.env.VERIFY_TOKEN || "ingressai123";
+
+  if (mode === "subscribe" && token === VERIFY_TOKEN) res.status(200).send(challenge);
+  else res.sendStatus(403);
 });
 
-// POST /webhook (mensagens)
-router.post("/", express.raw({ type: "application/json" }), async (req, res) => {
+// POST receiver
+webhookRouter.post("/", async (req, res) => {
   try {
-    // verificação de assinatura
-    if (APP_SECRET) {
-      const hdr = String(req.get("x-hub-signature-256") || "");
-      const mac = crypto.createHmac("sha256", APP_SECRET).update(req.body).digest("hex");
-      const mine = "sha256=" + mac;
-      if (hdr && hdr !== mine) log("webhook.signature_mismatch", { hdr, mine });
+    const body = req.body || {};
+    const changes = body?.entry?.[0]?.changes?.[0];
+    const value = changes?.value;
+
+    // status callbacks
+    if (value?.statuses) {
+      for (const s of value.statuses) {
+        log("WA status", { ...s, t: new Date().toISOString() });
+      }
+      return res.sendStatus(200);
     }
 
-    const data = JSON.parse(req.body.toString("utf8") || "{}");
-    res.status(200).send("OK"); // ACK cedo
+    const msg = value?.messages?.[0];
+    if (!msg) return res.sendStatus(200);
 
-    const entries = data?.entry || [];
-    for (const entry of entries) {
-      const changes = entry?.changes || [];
-      for (const change of changes) {
-        const value    = change?.value || {};
-        const statuses = value?.statuses || [];
-        const messages = value?.messages || [];
-        for (const st of statuses) log("WA status", { id: st.id, status: st.status, timestamp: st.timestamp, recipient_id: st.recipient_id });
-        for (const msg of messages) {
-          const mid  = msg.id;
-          const from = normalizePhone(msg.from || "");
-          if (!from) continue;
-          if (dedupe.has(mid)) continue;
-          dedupe.add(mid); setTimeout(()=>dedupe.delete(mid), 10*60*1000);
-          try { await markRead(mid); } catch {}
-          try {
-            // Admin flow de criação (estados de texto)
-            const s = sessions.get(from) || {};
-            if (s.state?.startsWith("adm_create_") && msg.type === "text") {
-              await adminHandleCreation(from, msg.text?.body || "");
-            } else {
-              await handleUserMessage({ from, message: msg, contacts: value?.contacts });
-            }
-          } catch (e) {
-            log("webhook.handle_error", e?.response?.data || e.message);
-            try { await sendText(from, "Deu ruim aqui 😵‍💫. Manda “Ver eventos” que eu me encontro."); } catch {}
+    const from = msg.from;
+    const admin = isAdmin(from);
+
+    // ===== INTERACTIVE (lista/botão) =====
+    if (msg.type === "interactive") {
+      const inter = msg.interactive;
+      const chosen = inter?.list_reply?.id || inter?.button_reply?.id || "";
+      log("incoming.message", { event: "incoming.message", from, type: "interactive", id: chosen, title: inter?.list_reply?.title || inter?.button_reply?.title });
+
+      // Menu
+      if (chosen.startsWith("menu:")) {
+        const action = chosen.split(":")[1];
+        if (action === "events")      await sendEventsList(from, 1);
+        else if (action === "mytickets") await sendText(from, "Você ainda não possui ingressos vinculados a este número.");
+        else if (action === "support")   await sendText(from, "Nosso time responde por aqui mesmo. Envie sua dúvida.");
+        else await sendMainMenu(from, admin);
+        return res.sendStatus(200);
+      }
+
+      // Eventos
+      if (chosen.startsWith("events:page:")) {
+        const page = parseInt(chosen.split(":")[2] || "1", 10);
+        await sendEventsList(from, page);
+        return res.sendStatus(200);
+      }
+      if (chosen.startsWith("events:view:")) {
+        const evId = chosen.split(":")[2];
+        await sendEventActions(from, evId);
+        return res.sendStatus(200);
+      }
+      if (chosen.startsWith("buy:")) {
+        const evId = chosen.split(":")[1];
+        await startPurchase(from, evId);
+        return res.sendStatus(200);
+      }
+
+      // Admin
+      if (chosen === "admin:panel") {
+        if (admin) await sendMainMenu(from, true);
+        else await sendMainMenu(from, false);
+        return res.sendStatus(200);
+      }
+      if (chosen === "admin:create") {
+        if (!admin) { await sendMainMenu(from, false); return res.sendStatus(200); }
+        await startCreateWizard(from);
+        return res.sendStatus(200);
+      }
+
+      // Assistente (ids começam com ac:)
+      if (chosen.startsWith("ac:")) {
+        const s = adminSessions.get(from);
+        if (!s) { await startCreateWizard(from); return res.sendStatus(200); }
+
+        // pular imagem
+        if (chosen === "ac:img:skip") { await askTitle(from); return res.sendStatus(200); }
+
+        // cidade
+        if (chosen.startsWith("ac:city:")) {
+          const city = chosen.split(":").slice(2).join(":");
+          if (city === "Outra cidade") {
+            s.step = "city-manual"; adminSessions.set(from, s);
+            await sendText(from, "Cidade? Digite o nome (ex.: Uberaba).");
+            return res.sendStatus(200);
           }
+          s.ev.city = city; adminSessions.set(from, s);
+          await askDate(from);
+          return res.sendStatus(200);
         }
+
+        // preço
+        if (chosen.startsWith("ac:price:")) {
+          const val = chosen.split(":").slice(2).join(":");
+          if (val === "manual") {
+            s.step = "price-manual"; adminSessions.set(from, s);
+            await sendText(from, "Preço em reais (apenas número). Ex.: 35");
+            return res.sendStatus(200);
+          }
+          s.ev.price = val; adminSessions.set(from, s);
+          await confirmPublish(from);
+          return res.sendStatus(200);
+        }
+
+        // confirmar
+        if (chosen === "ac:confirm:publish") { await finishPublish(from); return res.sendStatus(200); }
+        if (chosen === "ac:confirm:cancel" || chosen === "ac:cancel") {
+          adminSessions.delete(from);
+          await sendText(from, "Cancelado.");
+          await sendMainMenu(from, true);
+          return res.sendStatus(200);
+        }
+
+        // fallback do assistente
+        await sendMainMenu(from, admin);
+        return res.sendStatus(200);
+      }
+
+      // fallback geral
+      await sendMainMenu(from, admin);
+      return res.sendStatus(200);
+    }
+
+    // ===== MÍDIA (imagem/doc) =====
+    if (admin && (msg.type === "image" || msg.type === "document")) {
+      const caption = msg[msg.type]?.caption || "";
+      // 1) Se estiver no assistente esperando imagem, baixa e segue
+      const s = adminSessions.get(from);
+      if (s && s.step === "image" && msg.type === "image") {
+        const mediaId = msg.image?.id;
+        const url = await downloadMediaToUploads(mediaId);
+        if (url) s.ev.imageUrl = url;
+        adminSessions.set(from, s);
+        await askTitle(from);
+        return res.sendStatus(200);
+      }
+
+      // 2) LEGADO: legenda "criar:" (continua funcionando)
+      if (/^\s*criar\s*:/i.test(caption)) {
+        log("admin.create.caption", { from, caption });
+        await sendText(from, "🆕 Recebi os dados do evento e a mídia. Vou atualizar a landing (mock).");
+        return res.sendStatus(200);
       }
     }
+
+    // ===== TEXTO =====
+    if (msg.type === "text") {
+      const text = (msg.text?.body || "").trim();
+      log("incoming.message", { event: "incoming.message", from, type: "text", text });
+
+      // comandos simples para admins
+      if (admin && /^criar evento$/i.test(text)) {
+        await startCreateWizard(from);
+        return res.sendStatus(200);
+      }
+
+      // fluxo do assistente (etapas que exigem texto)
+      const s = admin ? adminSessions.get(from) : null;
+      if (s) {
+        if (s.step === "title") {
+          s.ev.title = text;
+          adminSessions.set(from, s);
+          await askCity(from);
+          return res.sendStatus(200);
+        }
+        if (s.step === "city-manual") {
+          s.ev.city = text;
+          adminSessions.set(from, s);
+          await askDate(from);
+          return res.sendStatus(200);
+        }
+        if (s.step === "date") {
+          const iso = parsePtDate(text);
+          if (!iso) {
+            await sendText(from, "Formato inválido. Tente: *20/09 23:00*");
+            return res.sendStatus(200);
+          }
+          s.ev.date = iso;
+          adminSessions.set(from, s);
+          await askPrice(from);
+          return res.sendStatus(200);
+        }
+        if (s.step === "price-manual") {
+          const n = Number(String(text).replace(",", ".").replace(/[^\d\.]/g, ""));
+          s.ev.price = isFinite(n) && n > 0 ? `R$ ${Math.round(n)}` : "R$ 20";
+          adminSessions.set(from, s);
+          await confirmPublish(from);
+          return res.sendStatus(200);
+        }
+      }
+
+      // default: abre menu (UX sem digitação)
+      await sendMainMenu(from, admin);
+      return res.sendStatus(200);
+    }
+
+    // Outros tipos -> menu
+    await sendMainMenu(from, admin);
+    return res.sendStatus(200);
+
   } catch (e) {
     log("webhook.error", e?.response?.data || e.message);
-    if (!res.headersSent) res.status(200).send("OK");
+    return res.sendStatus(200);
   }
 });
-
-export default router;
