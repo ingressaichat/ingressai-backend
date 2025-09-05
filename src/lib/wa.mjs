@@ -1,41 +1,75 @@
-import { cfg } from '../config.mjs';
+// src/lib/wa.mjs
+import express from "express";
+import axios from "axios";
+import crypto from "crypto";
+import { log } from "..../utils.mjs"; // <- caminho correto (sobe um nível)
 
-const GRAPH = 'https://graph.facebook.com/v20.0';
+const GRAPH_API_BASE = process.env.GRAPH_API_BASE || "https://graph.facebook.com";
+const GRAPH_VERSION  = process.env.GRAPH_API_VERSION || "v23.0";
+const PHONE_ID       = process.env.PHONE_NUMBER_ID || process.env.PUBLIC_WABA || "";
+const TOKEN          = process.env.WHATSAPP_TOKEN || process.env.WABA_TOKEN || "";
+const APP_SECRET     = process.env.APP_SECRET || "";
 
-async function send(payload) {
-  if (!cfg.META_ACCESS_TOKEN || !cfg.PHONE_ID) {
-    console.log('[WABA:simulado]', JSON.stringify(payload, null, 2));
-    return { ok: true, simulated: true };
+const APP_PROOF = (APP_SECRET && TOKEN)
+  ? crypto.createHmac("sha256", APP_SECRET).update(TOKEN).digest("hex")
+  : null;
+
+export const waConfigured = Boolean(PHONE_ID && TOKEN);
+
+const api = axios.create({
+  baseURL: `${GRAPH_API_BASE}/${GRAPH_VERSION}/${PHONE_ID}`,
+  headers: { "Content-Type": "application/json" },
+  params: () => ({ access_token: TOKEN, ...(APP_PROOF ? { appsecret_proof: APP_PROOF } : {}) })
+});
+
+export async function sendText(to, body) {
+  if (!waConfigured) { log("[WA send mock:text]", { to, body }); return { ok:true, mock:true }; }
+  try {
+    const { data } = await api.post("/messages", {
+      messaging_product: "whatsapp",
+      to,
+      type: "text",
+      text: { preview_url: false, body }
+    });
+    return { ok:true, data };
+  } catch (e) {
+    log("wa.send.error", e?.response?.data || e.message);
+    return { ok:false, error: e?.response?.data || e.message };
   }
-  const r = await fetch(`${GRAPH}/${cfg.PHONE_ID}/messages`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${cfg.META_ACCESS_TOKEN}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify(payload)
-  });
-  if (!r.ok) {
-    const txt = await r.text();
-    throw new Error(`WABA error ${r.status}: ${txt}`);
+}
+
+export async function sendList(to, { header, body, button, sections, footer }) {
+  if (!waConfigured) {
+    log("[WA send mock:list]", { to, header, body, button, sections });
+    return { ok:true, mock:true };
   }
-  return r.json();
+  try {
+    const payload = {
+      messaging_product: "whatsapp",
+      to,
+      type: "interactive",
+      interactive: {
+        type: "list",
+        header: header ? { type: "text", text: header } : undefined,
+        body: { text: body || "Selecione uma opção" },
+        footer: footer ? { text: footer } : undefined,
+        action: { button: button || "Escolher", sections }
+      }
+    };
+    const { data } = await api.post("/messages", payload);
+    return { ok:true, data };
+  } catch (e) {
+    log("wa.send.error", e?.response?.data || e.message);
+    return { ok:false, error: e?.response?.data || e.message };
+  }
 }
 
-export async function sendText(to, text) {
-  return send({
-    messaging_product: 'whatsapp',
-    to,
-    type: 'text',
-    text: { body: text }
+export const waDebugRouter = express.Router();
+waDebugRouter.get("/", (_req, res) => {
+  res.json({
+    configured: waConfigured,
+    phoneIdSet: Boolean(PHONE_ID),
+    tokenSet: Boolean(TOKEN),
+    version: GRAPH_VERSION
   });
-}
-
-export async function sendImage(to, link, caption='') {
-  return send({
-    messaging_product: 'whatsapp',
-    to,
-    type: 'image',
-    image: { link, caption }
-  });
-}
+});
