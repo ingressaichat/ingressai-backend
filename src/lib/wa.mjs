@@ -1,90 +1,108 @@
 // src/lib/wa.mjs
-import express from "express";
 import axios from "axios";
-import crypto from "crypto";
 import { log } from "../utils.mjs";
 
-const GRAPH_API_BASE = process.env.GRAPH_API_BASE || "https://graph.facebook.com";
-const GRAPH_VERSION  = process.env.GRAPH_API_VERSION || "v23.0";
-const PHONE_ID       = process.env.PHONE_NUMBER_ID || process.env.PUBLIC_WABA || "";
-const TOKEN          = process.env.WHATSAPP_TOKEN || process.env.WABA_TOKEN || "";
-const APP_SECRET     = process.env.APP_SECRET || "";
+/**
+ * Envia payload para a WhatsApp Business API (Graph).
+ */
+async function waRequest(path, payload) {
+  const GRAPH_VERSION = process.env.GRAPH_VERSION || process.env.GRAPH_API_VERSION || "v20.0";
+  const GRAPH_API_BASE = process.env.GRAPH_API_BASE || "https://graph.facebook.com";
+  const PHONE_NUMBER_ID = process.env.PHONE_NUMBER_ID;
+  const WHATSAPP_TOKEN =
+    process.env.WHATSAPP_TOKEN ||
+    process.env.WABA_TOKEN ||
+    process.env.META_TOKEN ||
+    process.env.ACCESS_TOKEN ||
+    "";
 
-const APP_PROOF = (APP_SECRET && TOKEN)
-  ? crypto.createHmac("sha256", APP_SECRET).update(TOKEN).digest("hex")
-  : null;
+  if (!PHONE_NUMBER_ID) throw new Error("PHONE_NUMBER_ID ausente");
+  if (!WHATSAPP_TOKEN) throw new Error("WHATSAPP_TOKEN ausente");
 
-export const waConfigured = Boolean(PHONE_ID && TOKEN);
+  const url = `${GRAPH_API_BASE}/${GRAPH_VERSION}/${PHONE_NUMBER_ID}/${path}`.replace(/([^:])\/{2,}/g, "$1/");
 
-// ⚠️ Nada de params=function aqui. Use interceptor.
-const api = axios.create({
-  baseURL: `${GRAPH_API_BASE}/${GRAPH_VERSION}/${PHONE_ID}`,
-  headers: { "Content-Type": "application/json" }
-});
-
-api.interceptors.request.use((config) => {
-  config.params = {
-    ...(config.params || {}),
-    access_token: TOKEN,
-    ...(APP_PROOF ? { appsecret_proof: APP_PROOF } : {})
-  };
-  return config;
-});
-
-/** Texto */
-export async function sendText(to, body) {
-  if (!waConfigured) { log("[WA send mock:text]", { to, body }); return { ok:true, mock:true }; }
   try {
-    const { data } = await api.post("/messages", {
-      messaging_product: "whatsapp",
-      to,
-      type: "text",
-      text: { preview_url: false, body }
+    const { data } = await axios.post(url, payload, {
+      headers: {
+        Authorization: `Bearer ${WHATSAPP_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      timeout: 15000,
     });
-    return { ok:true, data };
+    return data;
   } catch (e) {
-    log("wa.send.error", e?.response?.data || e.message);
-    return { ok:false, error: e?.response?.data || e.message };
+    const detail = e?.response?.data || e.message;
+    log("wa.request.error", { url, payload, detail });
+    throw e;
   }
 }
 
-/** Lista interativa */
-export async function sendList(to, { header, body, button, sections, footer }) {
-  if (!waConfigured) {
-    log("[WA send mock:list]", { to, header, body, button, sections });
-    return { ok:true, mock:true };
-  }
-  try {
-    const interactive = {
-      type: "list",
-      body: { text: body || "Selecione uma opção" },
-      action: { button: button || "Escolher", sections }
-    };
-    if (header) interactive.header = { type: "text", text: header };
-    if (footer) interactive.footer = { text: footer };
-
-    const payload = {
-      messaging_product: "whatsapp",
-      to,
-      type: "interactive",
-      interactive
-    };
-
-    const { data } = await api.post("/messages", payload);
-    return { ok:true, data };
-  } catch (e) {
-    log("wa.send.error", e?.response?.data || e.message);
-    return { ok:false, error: e?.response?.data || e.message };
-  }
-}
-
-/** Debug */
-export const waDebugRouter = express.Router();
-waDebugRouter.get("/", (_req, res) => {
-  res.json({
-    configured: waConfigured,
-    phoneIdSet: Boolean(PHONE_ID),
-    tokenSet: Boolean(TOKEN),
-    version: GRAPH_VERSION
+/**
+ * Envia texto simples.
+ */
+export async function sendText(to, text, previewUrl = false) {
+  return waRequest("messages", {
+    messaging_product: "whatsapp",
+    to,
+    type: "text",
+    text: { body: text, preview_url: !!previewUrl },
   });
-});
+}
+
+/**
+ * Envia LIST message (menu de seções/rows).
+ * sections: [{ title, rows: [{ id, title, description? }] }]
+ */
+export async function sendList(to, { header, body, button, sections }) {
+  return waRequest("messages", {
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "list",
+      header: header ? { type: "text", text: header } : undefined,
+      body: { text: body || "Escolha uma opção:" },
+      action: { button: button || "Selecionar", sections: sections || [] },
+    },
+  });
+}
+
+/**
+ * Envia botões rápidos (até 3).
+ * buttons: [{ id, title }]
+ */
+export async function sendButtons(to, body, buttons) {
+  const btns = (buttons || []).slice(0, 3).map((b) => ({
+    type: "reply",
+    reply: { id: String(b.id), title: String(b.title).slice(0, 20) },
+  }));
+
+  return waRequest("messages", {
+    messaging_product: "whatsapp",
+    to,
+    type: "interactive",
+    interactive: {
+      type: "button",
+      body: { text: body || "Escolha:" },
+      action: { buttons: btns },
+    },
+  });
+}
+
+/**
+ * Envia template (útil para OTP).
+ */
+export async function sendTemplate(to, name, langCode = "pt_BR", components) {
+  return waRequest("messages", {
+    messaging_product: "whatsapp",
+    to,
+    type: "template",
+    template: {
+      name,
+      language: { code: langCode },
+      components: components || [],
+    },
+  });
+}
+
+export default { sendText, sendList, sendButtons, sendTemplate };
