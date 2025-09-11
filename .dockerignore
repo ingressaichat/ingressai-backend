@@ -1,12 +1,9 @@
+cat > .dockerignore <<'EOF'
 node_modules
 npm-debug.log*
-*.log
-Dockerfile*
-docker-compose*
 .git
 .gitignore
-*.md
-*.sqlite
-*.db
 .env
-.env.*
+*.log
+.DS_Store
+EOF

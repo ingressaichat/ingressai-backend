@@ -1,36 +1,31 @@
-cat <<'EOF' > public/app/validator.html
 <!doctype html>
 <html lang="pt-BR">
-  <head>
-    <meta charset="utf-8" />
-    <title>IngressAI — Validador</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <style>body{font-family:system-ui,Inter,sans-serif;padding:24px;}</style>
-  </head>
-  <body>
-    <h1>Validador</h1>
-    <input id="c" placeholder="Código do ingresso" />
-    <button id="v">Validar</button>
-    <pre id="o"></pre>
-    <script>
-      const c = document.getElementById('c');
-      const v = document.getElementById('v');
-      const o = document.getElementById('o');
-      v.onclick = async () => {
-        o.textContent = '...';
-        try {
-          const r = await fetch('/api/validator/check', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({ code: c.value })
-          });
-          const j = await r.json();
-          o.textContent = JSON.stringify(j, null, 2);
-        } catch (e) {
-          o.textContent = 'Erro: ' + e.message;
-        }
-      };
-    </script>
-  </body>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>IngressAI — Validador</title>
+<body style="font-family:system-ui,Inter,sans-serif;max-width:560px;margin:32px auto;padding:0 16px">
+  <h1>Validador</h1>
+  <input id="c" placeholder="Código do ingresso" style="width:100%;padding:8px;font-size:16px" />
+  <button id="v" style="margin-top:12px;padding:8px 12px;font-size:16px">Validar</button>
+  <pre id="o" style="margin-top:16px">—</pre>
+  <script>
+    const c = document.getElementById('c');
+    const v = document.getElementById('v');
+    const o = document.getElementById('o');
+    v.onclick = async () => {
+      o.textContent = '...';
+      try {
+        const r = await fetch('/api/validator/check', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code: c.value })
+        });
+        const j = await r.json();
+        o.textContent = JSON.stringify(j, null, 2);
+      } catch (e) {
+        o.textContent = 'Erro: ' + e;
+      }
+    };
+  </script>
+</body>
 </html>
-EOF
