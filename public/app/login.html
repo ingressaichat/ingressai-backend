@@ -1,0 +1,37 @@
+cat <<'EOF' > public/app/login.html
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>IngressAI — Login</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>body{font-family:system-ui,Inter,sans-serif;padding:24px;}</style>
+  </head>
+  <body>
+    <h1>Login</h1>
+    <p>Digite seu WhatsApp (DDI+DDD+NÚMERO):</p>
+    <input id="p" placeholder="5534999992747" />
+    <button id="b">Enviar código</button>
+    <p id="m"></p>
+    <script>
+      const p = document.getElementById('p');
+      const b = document.getElementById('b');
+      const m = document.getElementById('m');
+      b.onclick = async () => {
+        const to = (p.value || '').replace(/\D/g, '');
+        m.textContent = 'Enviando...';
+        try {
+          const r = await fetch('/api/test/ping-login', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ phone: to })
+          });
+          m.textContent = r.ok ? 'Código enviado (demo). Veja seu WhatsApp.' : 'Falhou.';
+        } catch (e) {
+          m.textContent = 'Erro: ' + e.message;
+        }
+      };
+    </script>
+  </body>
+</html>
+EOF

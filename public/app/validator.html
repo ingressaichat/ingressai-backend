@@ -1,0 +1,36 @@
+cat <<'EOF' > public/app/validator.html
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>IngressAI — Validador</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>body{font-family:system-ui,Inter,sans-serif;padding:24px;}</style>
+  </head>
+  <body>
+    <h1>Validador</h1>
+    <input id="c" placeholder="Código do ingresso" />
+    <button id="v">Validar</button>
+    <pre id="o"></pre>
+    <script>
+      const c = document.getElementById('c');
+      const v = document.getElementById('v');
+      const o = document.getElementById('o');
+      v.onclick = async () => {
+        o.textContent = '...';
+        try {
+          const r = await fetch('/api/validator/check', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ code: c.value })
+          });
+          const j = await r.json();
+          o.textContent = JSON.stringify(j, null, 2);
+        } catch (e) {
+          o.textContent = 'Erro: ' + e.message;
+        }
+      };
+    </script>
+  </body>
+</html>
+EOF

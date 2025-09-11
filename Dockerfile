@@ -1,17 +1,16 @@
-# syntax=docker/dockerfile:1.6
 FROM node:22-alpine
 
 WORKDIR /app
 ENV NODE_ENV=production
 
-# Dependências nativas mínimas p/ pdfkit
-RUN apk add --no-cache libc6-compat
+# Instala só dependências de runtime
+COPY package.json package-lock.json ./
+RUN npm i --omit=dev
 
-COPY package*.json ./
-RUN npm ci --only=production
+# Copia o código e assets públicos
+COPY src ./src
+COPY public ./public
+COPY .env.example ./
 
-COPY . .
-
-# Railway injeta $PORT
-EXPOSE 3000
-CMD ["npm", "run", "start"]
+EXPOSE 8080
+CMD ["node", "src/server.mjs"]

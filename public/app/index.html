@@ -1,0 +1,27 @@
+mkdir -p public/app
+cat <<'EOF' > public/app/index.html
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <title>IngressAI — Dashboard</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <style>body{font-family:system-ui,Inter,sans-serif;padding:24px;}</style>
+  </head>
+  <body>
+    <h1>Dashboard IngressAI</h1>
+    <p>
+      <a href="/app/validator.html">Ir para o Validador</a> |
+      <a href="/app/login.html">Login</a>
+    </p>
+    <h2>Eventos</h2>
+    <pre id="out">carregando...</pre>
+    <script>
+      fetch('/api/events')
+        .then(r => r.json())
+        .then(j => { document.getElementById('out').textContent = JSON.stringify(j, null, 2); })
+        .catch(err => { document.getElementById('out').textContent = String(err); });
+    </script>
+  </body>
+</html>
+EOF
