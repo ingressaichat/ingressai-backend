@@ -1,70 +1,115 @@
+// src/routes/auth.mjs
 import { Router } from "express";
+import { sendOtp } from "../lib/wa.mjs";
+import {
+  signSession,
+  verifySession,
+  getCookieFromReq,
+  setAuthCookie,
+  clearAuthCookie,
+  sessionTtl,
+} from "../lib/session.mjs";
 
 const router = Router();
 
-// store em memória (trocar por Redis/DB em prod)
-const otpStore = new Map(); // key: phone, value: { code, exp }
+// memória simples p/ OTP (troque por Redis/DB em prod real)
+const OTP_STORE = new Map(); // key: phone -> { code, exp }
 
-function genCode() {
-  // 4–6 dígitos
-  return String(Math.floor(100000 + Math.random() * 900000)).slice(0, 6);
+// utils
+const onlyDigits = (s = "") => String(s).replace(/\D+/g, "");
+const ADMIN_PHONES = String(process.env.ADMIN_PHONES || "")
+  .split(",").map(s => onlyDigits(s)).filter(Boolean);
+
+function putOtp(phone, code, ttlSec = 300) {
+  const exp = Date.now() + ttlSec * 1000;
+  OTP_STORE.set(phone, { code, exp });
 }
+function takeOtp(phone) {
+  const it = OTP_STORE.get(phone);
+  if (!it) return null;
+  if (Date.now() > it.exp) { OTP_STORE.delete(phone); return null; }
+  return it;
+}
+function trashOtp(phone) { OTP_STORE.delete(phone); }
 
+// ====== POST /api/auth/request  ======
 router.post("/request", async (req, res) => {
   try {
-    const phone = String(req.body?.phone || "").replace(/\D+/g, "");
-    if (!phone || phone.length < 12) {
+    const phone = onlyDigits(req.body?.phone || "");
+    if (!phone || phone.length < 10) {
       return res.status(400).json({ ok: false, error: "phone_invalid" });
     }
-    const code = genCode();
-    const exp = Date.now() + 5 * 60 * 1000; // 5 min
-    otpStore.set(phone, { code, exp });
+    // gera OTP 6 dígitos
+    const code = (Math.floor(100000 + Math.random() * 900000)).toString();
+    putOtp(phone, code, 300);
 
-    // TODO: enviar via WhatsApp aqui (wa.sendMessage...)
-    console.log(`[AUTH] OTP para ${phone}: ${code}`);
-
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error("auth.request.error", e);
-    return res.status(500).json({ ok: false });
+    try {
+      await sendOtp(phone, code);
+      console.log(`[AUTH] OTP gerado para ${phone}: ${code} (expira em 300s)`);
+      return res.json({ ok: true });
+    } catch (e) {
+      console.error("[AUTH] sendOtp error:", e?.message || e);
+      return res.status(500).json({ ok: false, error: "otp_send_fail" });
+    }
+  } catch (err) {
+    console.error("auth.request.error", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
   }
 });
 
+// ====== POST /api/auth/verify  ======
 router.post("/verify", async (req, res) => {
   try {
-    const phone = String(req.body?.phone || "").replace(/\D+/g, "");
-    const code = String(req.body?.code || "").replace(/\D+/g, "");
-    const item = otpStore.get(phone);
-
-    if (!item || Date.now() > item.exp || item.code !== code) {
-      return res.status(401).json({ ok: false, error: "otp_invalid" });
+    const phone = onlyDigits(req.body?.phone || "");
+    const code  = onlyDigits(req.body?.code  || "");
+    if (!phone || !code) {
+      return res.status(400).json({ ok: false, error: "invalid_params" });
     }
 
-    // “validação” ok → emite um token simples (substitua por JWT real)
-    const token = Buffer.from(`${phone}:${Date.now()}`).toString("base64");
+    const entry = takeOtp(phone);
+    if (!entry || entry.code !== code) {
+      return res.status(401).json({ ok: false, error: "otp_invalid" });
+    }
+    // consome OTP
+    trashOtp(phone);
 
-    // seta cookie cross-site (landing -> backend)
-    res.cookie("ia_session", token, {
-      httpOnly: true,
-      secure: true,
-      sameSite: "none",
-      path: "/",
-      maxAge: 1000 * 60 * 60 * 24 * 30, // 30d
-    });
+    const isAdmin = ADMIN_PHONES.includes(phone);
+    const token = signSession({ phone, role: isAdmin ? "admin" : "user" }, sessionTtl());
+    setAuthCookie(res, token, sessionTtl());
 
-    // (opcional) limpa OTP após uso
-    otpStore.delete(phone);
-
-    return res.json({ ok: true });
-  } catch (e) {
-    console.error("auth.verify.error", e);
-    return res.status(500).json({ ok: false });
+    return res.json({ ok: true, user: { phone, role: isAdmin ? "admin" : "user" } });
+  } catch (err) {
+    console.error("auth.verify.error", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
   }
 });
 
+// ====== GET /api/auth/session  ======
 router.get("/session", (req, res) => {
-  const has = Boolean(req.cookies?.ia_session);
-  return res.json({ ok: has });
+  try {
+    const token = getCookieFromReq(req);
+    if (!token) return res.status(401).json({ ok: false, error: "no_session" });
+
+    const data = verifySession(token);
+    if (!data) return res.status(401).json({ ok: false, error: "invalid_session" });
+
+    const { phone, role, exp } = data;
+    return res.json({ ok: true, user: { phone, role }, exp });
+  } catch (err) {
+    console.error("auth.session.error", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
+// ====== POST /api/auth/logout  ======
+router.post("/logout", (req, res) => {
+  try {
+    clearAuthCookie(res);
+    return res.json({ ok: true });
+  } catch (err) {
+    console.error("auth.logout.error", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
 });
 
 export default router;

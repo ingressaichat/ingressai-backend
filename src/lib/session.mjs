@@ -1,114 +1,53 @@
+// src/lib/session.mjs
 import crypto from "node:crypto";
-import { sendText } from "./wa.mjs";
 
-/* ===== store em memória (troque por Redis se quiser persistir) ===== */
-const OTP_TTL_MS = 5 * 60 * 1000; // 5 min
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 dias
-const otpStore = new Map(); // phone -> { code, exp, tries }
+const APP_SECRET = process.env.APP_SECRET || "dev-secret";
+const COOKIE_NAME = process.env.SESSION_COOKIE_NAME || "iauth";
+const DEFAULT_TTL = Number(process.env.SESSION_TTL_SEC || 60 * 60 * 24 * 7); // 7d
+const PROD = String(process.env.NODE_ENV || "").toLowerCase() === "production";
 
-const now = () => Date.now();
-const rand = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
-const makeCode = () => String(rand(1000, 9999)); // 4 dígitos
-const b64url = (buf) =>
-  Buffer.from(buf)
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
-const fromB64url = (str) =>
-  Buffer.from(str.replace(/-/g, "+").replace(/_/g, "/"), "base64");
-
-const SESSION_SECRET = process.env.SESSION_SECRET || "dev-secret";
-const ADMIN_PHONES = String(process.env.ADMIN_PHONES || "")
-  .split(",")
-  .map((s) => s.trim().replace(/\D+/g, ""))
-  .filter(Boolean);
-const ORG_PHONES = String(
-  process.env.ORGANIZER_PHONES || process.env.ORG_PHONES || ""
-)
-  .split(",")
-  .map((s) => s.trim().replace(/\D+/g, ""))
-  .filter(Boolean);
-
-const isAdminPhone = (p) => ADMIN_PHONES.includes(String(p));
-const isOrganizerPhone = (p) => ORG_PHONES.includes(String(p)) || isAdminPhone(p);
-
-/* ===== OTP ===== */
-export async function requestOTP(phone) {
-  const code = makeCode();
-  const payload = { code, exp: now() + OTP_TTL_MS, tries: 0 };
-  otpStore.set(String(phone), payload);
-
-  const msg = `Seu código de login IngressAI: ${code}`;
-  try {
-    await sendText(String(phone), msg);
-  } catch {
-    console.log("[OTP]", phone, code);
-  }
-  return true;
+// assina payload com exp (unix sec)
+export function signSession(payload = {}, ttlSec = DEFAULT_TTL) {
+  const exp = Math.floor(Date.now() / 1000) + ttlSec;
+  const body = { ...payload, exp };
+  const b64 = Buffer.from(JSON.stringify(body)).toString("base64url");
+  const hmac = crypto.createHmac("sha256", APP_SECRET).update(b64).digest("base64url");
+  return `${b64}.${hmac}`;
 }
 
-export async function verifyOTP(phone, code) {
-  const item = otpStore.get(String(phone));
-  if (!item) return { ok: false };
-  if (now() > item.exp) {
-    otpStore.delete(String(phone));
-    return { ok: false };
-  }
-  if (String(code) !== String(item.code)) {
-    item.tries += 1;
-    if (item.tries > 6) otpStore.delete(String(phone));
-    return { ok: false };
-  }
-  otpStore.delete(String(phone));
-  const admin = isAdminPhone(phone);
-  const org = isOrganizerPhone(phone);
-  return { ok: true, isOrganizer: org, isAdmin: admin };
+export function verifySession(token = "") {
+  if (!token || typeof token !== "string" || !token.includes(".")) return null;
+  const [b64, mac] = token.split(".");
+  const calc = crypto.createHmac("sha256", APP_SECRET).update(b64).digest("base64url");
+  if (!crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(calc))) return null;
+  const data = JSON.parse(Buffer.from(b64, "base64url").toString("utf8"));
+  if (typeof data?.exp !== "number" || data.exp < Math.floor(Date.now() / 1000)) return null;
+  return data;
 }
 
-/* ===== sessão em cookie assinado (HMAC) ===== */
-function sign(data) {
-  return crypto.createHmac("sha256", SESSION_SECRET).update(data).digest();
+export function getCookieFromReq(req, name = COOKIE_NAME) {
+  try { return req.cookies?.[name] || ""; } catch { return ""; }
 }
 
-export function setSessionCookie(res, session) {
-  const payload = { ...session, iat: now(), exp: now() + SESSION_TTL_MS };
-  const json = Buffer.from(JSON.stringify(payload));
-  const sig = sign(json);
-  const token = `${b64url(json)}.${b64url(sig)}`;
-
-  // cookie cross-site (GitHub Pages -> backend)
-  res.cookie("ia_session", token, {
+export function setAuthCookie(res, token, ttlSec = DEFAULT_TTL) {
+  // cross-site cookie para GitHub Pages / domínio próprio
+  res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
-    secure: true, // precisa ser true (Pages é https; Railway com proxy)
-    sameSite: "none", // cross-site
+    secure: true,         // obrigatório p/ SameSite=None
+    sameSite: "none",     // permite cookie em cross-site
     path: "/",
-    maxAge: SESSION_TTL_MS
+    maxAge: ttlSec * 1000,
   });
 }
 
-export function readSession(req) {
-  const raw = req.cookies?.ia_session || null;
-  if (!raw) return null;
-  const [p64, s64] = String(raw).split(".");
-  if (!p64 || !s64) return null;
-  try {
-    const payloadBuf = fromB64url(p64);
-    const sigBuf = fromB64url(s64);
-    const expected = sign(payloadBuf);
-    if (!crypto.timingSafeEqual(sigBuf, expected)) return null;
-    const data = JSON.parse(payloadBuf.toString("utf8"));
-    if (now() > Number(data.exp || 0)) return null;
-    return {
-      phone: data.phone,
-      isOrganizer: !!data.isOrganizer,
-      isAdmin: !!data.isAdmin
-    };
-  } catch {
-    return null;
-  }
+export function clearAuthCookie(res) {
+  res.clearCookie(COOKIE_NAME, {
+    httpOnly: true,
+    secure: true,
+    sameSite: "none",
+    path: "/",
+  });
 }
 
-export function logout(res) {
-  res.clearCookie("ia_session", { path: "/" });
-}
+export function cookieName() { return COOKIE_NAME; }
+export function sessionTtl() { return DEFAULT_TTL; }
