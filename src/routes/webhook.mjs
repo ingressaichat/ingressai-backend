@@ -4,27 +4,22 @@
 /**
  * Webhook WhatsApp — IngressAI
  * -------------------------------------------------------
- * - Verificação (GET)
- * - Recebimento (POST)
+ * - Verificação (GET /webhook)
+ * - Recebimento (POST /webhook)
  *   • Menu principal
- *   • Vitrine (página/lista)
- *   • Detalhe/compra
- *   • Meus ingressos (com fallback se db.listTickets não existir)
- *   • Suporte (tickets)
+ *   • Vitrine (páginas/lista)
+ *   • Detalhe/compra (chama /api/purchase/start)
+ *   • Meus ingressos (fallback se db.listTickets não existir)
+ *   • Suporte com tickets simples em memória
  *   • Painel Admin (criar/editar/excluir evento, broadcast, responder tickets)
  *   • Upload de mídia (imagem) para criar/atualizar evento
  *
- * ⚠️ IMPORTANTE:
- *   - Este arquivo usa import namespace para o DB:
- *       import * as db from "../lib/db.mjs"
- *     Dessa forma ele **não quebra** se algum export (ex.: listTickets) não existir
- *     no build atual — apenas desativa a funcionalidade específica.
+ * Obs.: Import do DB em namespace para tolerar builds sem alguns métodos.
  */
 
 import { Router } from "express";
 import axios from "axios";
 
-// Config central
 import {
   VERIFY_TOKEN,
   BASE_URL,
@@ -34,25 +29,19 @@ import {
   WHATSAPP_TOKEN,
 } from "../config.mjs";
 
-// ✅ Namespace import do DB para evitar crash quando faltar export
+// ✅ Namespace para não quebrar se faltar função
 import * as db from "../lib/db.mjs";
 
-// Envio WA (usa versão corrigida sem `category` no template)
-import {
-  sendText,
-  sendList,
-  sendButtons,
-  sendDocument, // pode ser útil em respostas admin
-} from "../lib/wa.mjs";
+// Envio WA (versão sem category em templates)
+import { sendText, sendList, sendButtons, sendDocument } from "../lib/wa.mjs";
 
-// Utils comuns
+// Utils
 import {
   fit,
   fitDesc,
   fmtDateBR,
   onlyDigits,
   fmtPhoneLabel,
-  maskPhone,
   log,
 } from "../utils.mjs";
 
@@ -89,12 +78,14 @@ const STOP_WORDS = [
   "end",
   "cancelar",
 ];
+
 const normalize = (s) =>
   String(s || "")
     .toLowerCase()
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
     .trim();
+
 const isStopText = (txt) => STOP_WORDS.includes(normalize(txt));
 
 function priceLabelBR(v) {
@@ -102,17 +93,16 @@ function priceLabelBR(v) {
     String(v).replace(/[^\d.,-]/g, "").replace(/\./g, "").replace(",", ".")
   );
   if (!n) return "";
-  return (
-    "R$ " +
-    (n % 1 ? n.toFixed(2) : String(Math.round(n))).replace(".", ",")
-  );
+  return "R$ " + (n % 1 ? n.toFixed(2) : String(Math.round(n))).replace(".", ",");
 }
 
 async function notifyAdmins(text) {
   for (const adm of ADMIN_SET) {
     try {
       await sendText(adm, text);
-    } catch {}
+    } catch {
+      // ignora erros individuais
+    }
   }
 }
 
@@ -130,6 +120,7 @@ async function getMediaMeta(mediaId) {
     return null;
   }
 }
+
 async function extractMediaFromMessage(msg) {
   const type = msg.type;
   const payload = msg[type] || {};
@@ -147,7 +138,7 @@ async function extractMediaFromMessage(msg) {
 }
 
 /* ============================================================================
-   ESTADO NA MEMÓRIA (tickets de suporte / fluxos)
+   ESTADO NA MEMÓRIA (tickets/fluxos)
 ============================================================================ */
 const knownContacts = new Set();
 
@@ -196,10 +187,18 @@ async function sendMainMenu(to, adminFlag) {
 }
 
 async function sendEventsList(to, page = 1, size = 5) {
-  const { items, totalPages, page: p } = db.listEvents(page, size);
+  const listFn = typeof db.listEvents === "function" ? db.listEvents : () => ({
+    items: [],
+    page: 1,
+    totalPages: 1,
+  });
+  const pureNameFn =
+    typeof db.pureEventName === "function" ? db.pureEventName : (x) => x?.title || String(x?.id || "Evento");
+
+  const { items, totalPages, page: p } = listFn(page, size);
   const rows = items.map((ev) => ({
     id: `events:view:${ev.id}`,
-    title: fit(db.pureEventName(ev), 24),
+    title: fit(pureNameFn(ev), 24),
     description: fitDesc(
       `${ev.city || ""} · ${fmtDateBR(ev.date)} ${
         ev.price ? `· ${priceLabelBR(ev.price)}` : ""
@@ -223,12 +222,16 @@ async function sendEventsList(to, page = 1, size = 5) {
 }
 
 async function sendEventActions(to, evId, adminFlag = false) {
-  const ev = db.findEvent(evId);
+  const findFn = typeof db.findEvent === "function" ? db.findEvent : () => null;
+  const pureNameFn =
+    typeof db.pureEventName === "function" ? db.pureEventName : (x) => x?.title || String(x?.id || "Evento");
+
+  const ev = findFn(evId);
   if (!ev) {
     await sendText(to, "Evento não encontrado.");
     return;
   }
-  const title = fit(db.pureEventName(ev), 24);
+  const title = fit(pureNameFn(ev), 24);
   const meta = `${ev.city || ""} · ${fmtDateBR(ev.date)} ${
     ev.price ? `· ${priceLabelBR(ev.price)}` : ""
   }`.replace(/\s+·\s+$/, "");
@@ -327,8 +330,12 @@ router.get("/", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-  if (mode === "subscribe" && token === VERIFY_TOKEN)
+
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("[WEBHOOK] verified");
     return res.status(200).send(challenge);
+  }
+  console.warn("[WEBHOOK] verify failed", { mode, tokenOk: token === VERIFY_TOKEN });
   return res.sendStatus(403);
 });
 
@@ -337,13 +344,21 @@ router.get("/", (req, res) => {
 ============================================================================ */
 router.post("/", async (req, res) => {
   try {
-    const value = req.body?.entry?.[0]?.changes?.[0]?.value;
+    const entry = req.body?.entry?.[0];
+    const change = entry?.changes?.[0];
+    const value = change?.value;
 
-    // confirmações de status
-    if (value?.statuses) return res.sendStatus(200);
+    // status callbacks não precisam de ação
+    if (value?.statuses) {
+      console.log("[WEBHOOK] status", JSON.stringify(value.statuses[0] || {}, null, 0));
+      return res.sendStatus(200);
+    }
 
     const msg = value?.messages?.[0];
-    if (!msg) return res.sendStatus(200);
+    if (!msg) {
+      console.log("[WEBHOOK] no message payload");
+      return res.sendStatus(200);
+    }
 
     const from = msg.from;
     const type = msg.type;
@@ -351,11 +366,20 @@ router.post("/", async (req, res) => {
 
     knownContacts.add(from);
 
+    // log resumido de entrada
+    const brief =
+      type === "text"
+        ? (msg.text?.body || "").slice(0, 180)
+        : type === "interactive"
+        ? msg.interactive?.list_reply?.id || msg.interactive?.button_reply?.id || ""
+        : type;
+    console.log("[WEBHOOK] IN", { from, type, brief });
+
     /* ===================== TEXT ===================== */
     if (type === "text") {
       const body = String(msg.text?.body || "").trim();
 
-      // ——— fluxo: SUPORTE coletando a 1ª mensagem ———
+      // SUPORTE — coletando 1ª msg
       const sup = supportSessions.get(from);
       if (sup?.step === "collect_message") {
         if (isStopText(body)) {
@@ -364,9 +388,7 @@ router.post("/", async (req, res) => {
           await sendMainMenu(from, adminFlag);
           return res.sendStatus(200);
         }
-        let t = sup.ticketId
-          ? supportTickets.find((x) => x.id === sup.ticketId)
-          : null;
+        let t = sup.ticketId ? supportTickets.find((x) => x.id === sup.ticketId) : null;
         if (!t) {
           t = {
             id: `SUP-${supportSeq++}`,
@@ -381,17 +403,14 @@ router.post("/", async (req, res) => {
         }
         t.messages.push({ at: Date.now(), from, text: body });
 
-        await sendText(
-          from,
-          "✅ Recebido. Um atendente vai te responder por aqui em breve."
-        );
+        await sendText(from, "✅ Recebido. Um atendente vai te responder por aqui em breve.");
         await notifyAdmins(
           `🆕 Ticket ${t.id} de ${fmtPhoneLabel(from)} — categoria: ${t.category}\n\nMensagem:\n${body}`
         );
         return res.sendStatus(200);
       }
 
-      // ——— fluxo: ADMIN reply em um contato ———
+      // ADMIN — reply direto
       const rep = replySessions.get(from);
       if (adminFlag && rep?.replyingToPhone) {
         if (isStopText(body)) {
@@ -402,17 +421,14 @@ router.post("/", async (req, res) => {
         }
         try {
           await sendText(rep.replyingToPhone, body);
-          await sendText(
-            from,
-            `✅ Enviado para ${fmtPhoneLabel(rep.replyingToPhone)}.`
-          );
+          await sendText(from, `✅ Enviado para ${fmtPhoneLabel(rep.replyingToPhone)}.`);
         } catch {
           await sendText(from, "Falha ao enviar.");
         }
         return res.sendStatus(200);
       }
 
-      // ——— fluxo: ADMIN broadcast escrevendo texto ———
+      // ADMIN — broadcast escrevendo texto
       const bc = broadcastSessions.get(from);
       if (adminFlag && bc?.step === "write_text") {
         if (isStopText(body)) {
@@ -430,18 +446,16 @@ router.post("/", async (req, res) => {
           }
           try {
             await sendText(bc.target, text);
-            await sendText(
-              from,
-              `✅ Enviado para ${fmtPhoneLabel(bc.target)}.`
-            );
+            await sendText(from, `✅ Enviado para ${fmtPhoneLabel(bc.target)}.`);
           } catch {
             await sendText(from, "Falha em enviar para o alvo.");
           }
           broadcastSessions.delete(from);
           return res.sendStatus(200);
-        } else if (bc.mode === "last") {
-          let ok = 0,
-            fail = 0;
+        }
+        if (bc.mode === "last") {
+          let ok = 0;
+          let fail = 0;
           for (const ph of knownContacts) {
             try {
               await sendText(ph, text);
@@ -450,16 +464,13 @@ router.post("/", async (req, res) => {
               fail++;
             }
           }
-          await sendText(
-            from,
-            `Broadcast finalizado. OK: ${ok} • Falhas: ${fail}`
-          );
+          await sendText(from, `Broadcast finalizado. OK: ${ok} • Falhas: ${fail}`);
           broadcastSessions.delete(from);
           return res.sendStatus(200);
         }
       }
 
-      // ——— fluxo: ADMIN criação de evento (wizard) ———
+      // ADMIN — criação (wizard)
       const createWiz = adminCreateSessions.get(from);
       if (adminFlag && createWiz) {
         const step = createWiz.step || "title";
@@ -495,39 +506,33 @@ router.post("/", async (req, res) => {
           return res.sendStatus(200);
         }
         if (step === "price") {
-          draft.price =
-            Number(
-              String(body).replace(/[^\d.,-]/g, "").replace(",", ".")
-            ) || 0;
+          draft.price = Number(String(body).replace(/[^\d.,-]/g, "").replace(",", ".")) || 0;
           adminCreateSessions.set(from, { step: "media", draft });
-          await sendText(
-            from,
-            "Envie uma *imagem* agora ou mande *pular* para finalizar sem imagem."
-          );
+          await sendText(from, "Envie uma *imagem* agora ou mande *pular* para finalizar sem imagem.");
           return res.sendStatus(200);
         }
         if (step === "media") {
           if (normalize(body) === "pular") {
-            const ev = db.createEvent(draft);
+            const createFn = typeof db.createEvent === "function" ? db.createEvent : null;
+            if (!createFn) {
+              await sendText(from, "Criação indisponível neste ambiente.");
+              adminCreateSessions.delete(from);
+              return res.sendStatus(200);
+            }
+            const ev = createFn(draft);
             adminCreateSessions.delete(from);
-            await sendText(
-              from,
-              `✅ Evento criado: *${db.pureEventName(ev)}*\n${ev.city} · ${fmtDateBR(
-                ev.date
-              )}`
-            );
+            const pureNameFn =
+              typeof db.pureEventName === "function" ? db.pureEventName : (x) => x?.title || String(x?.id || "Evento");
+            await sendText(from, `✅ Evento criado: *${pureNameFn(ev)}*\n${ev.city} · ${fmtDateBR(ev.date)}`);
             await sendEventActions(from, ev.id, true);
             return res.sendStatus(200);
           }
-          await sendText(
-            from,
-            "Envie a imagem do evento (tipo: *imagem*)."
-          );
+          await sendText(from, "Envie a imagem do evento (tipo: *imagem*).");
           return res.sendStatus(200);
         }
       }
 
-      // ——— fluxo: ADMIN edição de evento (wizard) ———
+      // ADMIN — edição (wizard)
       const editWiz = adminEditSessions.get(from);
       if (adminFlag && editWiz) {
         const evId = editWiz.id;
@@ -539,9 +544,15 @@ router.post("/", async (req, res) => {
           await sendEventActions(from, evId, true);
           return res.sendStatus(200);
         }
+        const updateFn = typeof db.updateEvent === "function" ? db.updateEvent : null;
+        if (!updateFn) {
+          await sendText(from, "Edição indisponível neste ambiente.");
+          adminEditSessions.delete(from);
+          return res.sendStatus(200);
+        }
         if (step === "title") {
           patch.title = body;
-          db.updateEvent(evId, patch);
+          updateFn(evId, patch);
           adminEditSessions.delete(from);
           await sendText(from, "✅ Título atualizado.");
           await sendEventActions(from, evId, true);
@@ -549,7 +560,7 @@ router.post("/", async (req, res) => {
         }
         if (step === "city") {
           patch.city = body;
-          db.updateEvent(evId, patch);
+          updateFn(evId, patch);
           adminEditSessions.delete(from);
           await sendText(from, "✅ Cidade atualizada.");
           await sendEventActions(from, evId, true);
@@ -557,7 +568,7 @@ router.post("/", async (req, res) => {
         }
         if (step === "venue") {
           patch.venue = body;
-          db.updateEvent(evId, patch);
+          updateFn(evId, patch);
           adminEditSessions.delete(from);
           await sendText(from, "✅ Local atualizado.");
           await sendEventActions(from, evId, true);
@@ -565,18 +576,15 @@ router.post("/", async (req, res) => {
         }
         if (step === "date") {
           patch.date = body;
-          db.updateEvent(evId, patch);
+          updateFn(evId, patch);
           adminEditSessions.delete(from);
           await sendText(from, "✅ Data atualizada.");
           await sendEventActions(from, evId, true);
           return res.sendStatus(200);
         }
         if (step === "price") {
-          patch.price =
-            Number(
-              String(body).replace(/[^\d.,-]/g, "").replace(",", ".")
-            ) || 0;
-          db.updateEvent(evId, patch);
+          patch.price = Number(String(body).replace(/[^\d.,-]/g, "").replace(",", ".")) || 0;
+          updateFn(evId, patch);
           adminEditSessions.delete(from);
           await sendText(from, "✅ Preço atualizado.");
           await sendEventActions(from, evId, true);
@@ -588,7 +596,7 @@ router.post("/", async (req, res) => {
         }
       }
 
-      // ——— comandos simples ———
+      // Comandos simples
       const n = normalize(body);
       if (n === "menu" || n === "oi" || n === "ola" || n === "olá") {
         await sendMainMenu(from, adminFlag);
@@ -599,52 +607,45 @@ router.post("/", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      await sendText(
-        from,
-        "Mande *menu* para ver opções, ou *suporte* para falar com a gente."
-      );
+      await sendText(from, "Mande *menu* para ver opções, ou *suporte* para falar com a gente.");
       return res.sendStatus(200);
     }
 
     /* ===================== INTERACTIVE ===================== */
     if (type === "interactive") {
       const chosen =
-        msg.interactive?.list_reply?.id ||
-        msg.interactive?.button_reply?.id ||
-        "";
+        msg.interactive?.list_reply?.id || msg.interactive?.button_reply?.id || "";
 
-      // ——— Menu principal ———
+      console.log("[WEBHOOK] choice", { from, chosen });
+
       if (chosen === "menu:events") {
         await sendEventsList(from, 1, 5);
         return res.sendStatus(200);
       }
       if (chosen === "menu:mytickets") {
-        // Fallback: só tenta se existir db.listTickets; senão, mensagem neutra
         if (typeof db.listTickets === "function") {
-          const tickets = db.listTickets(from); // modo phone → Array
+          const tickets = db.listTickets(from);
           if (!tickets.length) {
-            await sendText(
-              from,
-              "Você ainda não possui ingressos."
-            );
+            await sendText(from, "Você ainda não possui ingressos.");
             await sendMainMenu(from, isAdmin(from));
             return res.sendStatus(200);
           }
+          const pureNameFn =
+            typeof db.pureEventName === "function"
+              ? db.pureEventName
+              : (x) => x?.title || String(x?.id || "Evento");
+          const findFn = typeof db.findEvent === "function" ? db.findEvent : () => null;
+
           const lines = tickets
             .slice(-5)
-            .map(
-              (t) =>
-                `• #${t.id} • ${t.buyerName} • ${db.pureEventName(
-                  db.findEvent?.(t.eventId) || t.eventId
-                )} • ${t.code}`
-            )
+            .map((t) => {
+              const evName = pureNameFn(findFn?.(t.eventId) || { id: t.eventId, title: String(t.eventId) });
+              return `• #${t.id} • ${t.buyerName} • ${evName} • ${t.code}`;
+            })
             .join("\n");
           await sendText(from, `Seus últimos ingressos:\n${lines}`);
         } else {
-          await sendText(
-            from,
-            "Consulta de ingressos ainda não está habilitada neste ambiente."
-          );
+          await sendText(from, "Consulta de ingressos ainda não está habilitada neste ambiente.");
         }
         await sendMainMenu(from, isAdmin(from));
         return res.sendStatus(200);
@@ -661,10 +662,7 @@ router.post("/", async (req, res) => {
         return res.sendStatus(200);
       }
       if (chosen === "menu:dashboard") {
-        await sendText(
-          from,
-          "Login do Dashboard: https://ingressai.chat/app/login.html"
-        );
+        await sendText(from, "Login do Dashboard: https://ingressai.chat/app/login.html");
         return res.sendStatus(200);
       }
       if (chosen === "menu:back") {
@@ -672,7 +670,7 @@ router.post("/", async (req, res) => {
         return res.sendStatus(200);
       }
 
-      // ——— Admin painel ———
+      // Painel admin
       if (chosen === "admin:panel") {
         if (!isAdmin(from)) {
           await sendText(from, "Acesso restrito.");
@@ -723,9 +721,7 @@ router.post("/", async (req, res) => {
         const rows = open.map((t) => ({
           id: `admin:sup:reply:${t.from}`,
           title: fit(`Ticket ${t.id}`, 24),
-          description: fitDesc(
-            `${fmtPhoneLabel(t.from)} • ${t.category} • msgs:${t.messages.length}`
-          ),
+          description: fitDesc(`${fmtPhoneLabel(t.from)} • ${t.category} • msgs:${t.messages.length}`),
         }));
         await sendList(from, {
           header: "Tickets de suporte",
@@ -741,14 +737,12 @@ router.post("/", async (req, res) => {
         replySessions.set(from, { replyingToPhone: phone });
         await sendText(
           from,
-          `Você está respondendo ${fmtPhoneLabel(
-            phone
-          )}. Envie a mensagem.\n\nMande *voltar* para encerrar.`
+          `Você está respondendo ${fmtPhoneLabel(phone)}. Envie a mensagem.\n\nMande *voltar* para encerrar.`
         );
         return res.sendStatus(200);
       }
 
-      // ——— Broadcast ———
+      // Broadcast
       if (chosen === "admin:bc:aud:one") {
         if (!isAdmin(from)) return res.sendStatus(200);
         broadcastSessions.set(from, { step: "ask_target", mode: "one" });
@@ -758,14 +752,11 @@ router.post("/", async (req, res) => {
       if (chosen === "admin:bc:aud:last") {
         if (!isAdmin(from)) return res.sendStatus(200);
         broadcastSessions.set(from, { step: "write_text", mode: "last" });
-        await sendText(
-          from,
-          `Digite o texto do broadcast. Destinatários: ${knownContacts.size}.`
-        );
+        await sendText(from, `Digite o texto do broadcast. Destinatários: ${knownContacts.size}.`);
         return res.sendStatus(200);
       }
 
-      // ——— Eventos: paginação/detalhe/compra ———
+      // Eventos: paginação/detalhe/compra
       if (chosen.startsWith("events:page:")) {
         const page = Number(chosen.split(":")[2] || "1") || 1;
         await sendEventsList(from, page, 5);
@@ -788,20 +779,15 @@ router.post("/", async (req, res) => {
             params: { ev: id, to: from, name: buyerName, qty: 1 },
             timeout: 15000,
           });
-          await sendText(
-            from,
-            `✅ Compra iniciada para *${buyerName}*. Você receberá o PDF do ingresso aqui.`
-          );
-        } catch {
-          await sendText(
-            from,
-            "Não consegui iniciar agora. Tente novamente em instantes."
-          );
+          await sendText(from, `✅ Compra iniciada para *${buyerName}*. Você receberá o PDF do ingresso aqui.`);
+        } catch (e) {
+          console.warn("purchase.start.error", e?.response?.data || e.message);
+          await sendText(from, "Não consegui iniciar agora. Tente novamente em instantes.");
         }
         return res.sendStatus(200);
       }
 
-      // ——— Suporte ———
+      // Suporte
       if (chosen === "support:end") {
         supportSessions.delete(from);
         await sendText(from, "Suporte encerrado. Voltando ao menu…");
@@ -819,106 +805,21 @@ router.post("/", async (req, res) => {
           createdAt: Date.now(),
         };
         supportTickets.push(t);
-        supportSessions.set(from, {
-          step: "collect_message",
-          category,
-          ticketId: t.id,
-        });
+        supportSessions.set(from, { step: "collect_message", category, ticketId: t.id });
         await sendText(
           from,
           `📩 Ticket criado (*${category}*).\n\nResponda com sua mensagem e um atendente vai responder por aqui.\nEnvie *voltar* a qualquer momento para voltar ao menu.`
         );
-        await notifyAdmins(
-          `🆕 Ticket ${t.id} de ${fmtPhoneLabel(from)} — categoria: ${category}`
-        );
+        await notifyAdmins(`🆕 Ticket ${t.id} de ${fmtPhoneLabel(from)} — categoria: ${category}`);
         return res.sendStatus(200);
       }
 
-      // ——— Admin editar/excluir ———
-      if (chosen.startsWith("admin:ev:edit:")) {
-        if (!isAdmin(from)) return res.sendStatus(200);
-        const id = chosen.split(":")[3];
-        const ev = db.findEvent(id);
-        if (!ev) {
-          await sendText(from, "Evento não encontrado.");
-          return res.sendStatus(200);
-        }
-        adminEditSessions.set(from, { id, step: "choose", patch: {} });
-        await sendList(from, {
-          header: fit(db.pureEventName(ev), 50),
-          body: "O que deseja editar?",
-          button: "Escolher",
-          sections: [
-            {
-              title: "Campos",
-              rows: [
-                { id: `admin:ev:set:title:${id}`, title: "Título" },
-                { id: `admin:ev:set:city:${id}`, title: "Cidade" },
-                { id: `admin:ev:set:venue:${id}`, title: "Local" },
-                { id: `admin:ev:set:date:${id}`, title: "Data" },
-                { id: `admin:ev:set:price:${id}`, title: "Preço" },
-                { id: `admin:ev:set:media:${id}`, title: "Mídia (imagem)" },
-              ],
-            },
-          ],
-        });
-        return res.sendStatus(200);
-      }
-      if (chosen.startsWith("admin:ev:set:")) {
-        if (!isAdmin(from)) return res.sendStatus(200);
-        const [, , , field, id] = chosen.split(":");
-        const session = adminEditSessions.get(from) || {
-          id,
-          step: "choose",
-          patch: {},
-        };
-        session.id = id;
-        session.step = field;
-        adminEditSessions.set(from, session);
-        const promptBy = {
-          title: "Novo título:",
-          city: "Nova cidade (ex.: Uberaba-MG):",
-          venue: "Novo local:",
-          date: "Nova data (ISO ou dd/mm/aaaa hh:mm):",
-          price: "Novo preço (apenas números):",
-          media: "Envie uma *imagem* agora.",
-        };
-        await sendText(from, promptBy[field] || "Envie o novo valor.");
-        return res.sendStatus(200);
-      }
-      if (chosen.startsWith("admin:ev:delete:")) {
-        if (!isAdmin(from)) return res.sendStatus(200);
-        const id = chosen.split(":")[3];
-        const ev = db.findEvent(id);
-        if (!ev) {
-          await sendText(from, "Evento não encontrado.");
-          return res.sendStatus(200);
-        }
-        await sendButtons(
-          from,
-          `Confirma excluir *${db.pureEventName(ev)}*?`,
-          [
-            { id: `admin:ev:confirmdel:${id}`, title: "Confirmar" },
-            { id: `events:view:${id}`, title: "Cancelar" },
-          ]
-        );
-        return res.sendStatus(200);
-      }
-      if (chosen.startsWith("admin:ev:confirmdel:")) {
-        if (!isAdmin(from)) return res.sendStatus(200);
-        const id = chosen.split(":")[3];
-        db.deleteEvent(id);
-        await sendText(from, "✅ Evento excluído.");
-        await sendEventsList(from, 1, 10);
-        return res.sendStatus(200);
-      }
-
-      // default → volta pro menu
+      // default
       await sendMainMenu(from, isAdmin(from));
       return res.sendStatus(200);
     }
 
-    /* ===================== IMAGE (mídia p/ evento) ===================== */
+    /* ===================== IMAGE ===================== */
     if (type === "image") {
       const editWiz = adminEditSessions.get(from);
       const createWiz = adminCreateSessions.get(from);
@@ -931,23 +832,30 @@ router.post("/", async (req, res) => {
 
       if (createWiz?.step === "media") {
         const draft = createWiz.draft || {};
+        const createFn = typeof db.createEvent === "function" ? db.createEvent : null;
+        if (!createFn) {
+          await sendText(from, "Criação indisponível neste ambiente.");
+          adminCreateSessions.delete(from);
+          return res.sendStatus(200);
+        }
         draft.media = { url: media.url, type: media.mime || "image/jpeg" };
-        const ev = db.createEvent(draft);
+        const ev = createFn(draft);
         adminCreateSessions.delete(from);
-        await sendText(
-          from,
-          `✅ Evento criado: *${db.pureEventName(ev)}*\n${ev.city} · ${fmtDateBR(
-            ev.date
-          )}`
-        );
+        const pureNameFn =
+          typeof db.pureEventName === "function" ? db.pureEventName : (x) => x?.title || String(x?.id || "Evento");
+        await sendText(from, `✅ Evento criado: *${pureNameFn(ev)}*\n${ev.city} · ${fmtDateBR(ev.date)}`);
         await sendEventActions(from, ev.id, true);
         return res.sendStatus(200);
       }
 
       if (editWiz?.step === "media" && editWiz?.id) {
-        db.updateEvent(editWiz.id, {
-          media: { url: media.url, type: media.mime || "image/jpeg" },
-        });
+        const updateFn = typeof db.updateEvent === "function" ? db.updateEvent : null;
+        if (!updateFn) {
+          await sendText(from, "Edição indisponível neste ambiente.");
+          adminEditSessions.delete(from);
+          return res.sendStatus(200);
+        }
+        updateFn(editWiz.id, { media: { url: media.url, type: media.mime || "image/jpeg" } });
         adminEditSessions.delete(from);
         await sendText(from, "✅ Mídia atualizada.");
         await sendEventActions(from, editWiz.id, true);
@@ -963,14 +871,12 @@ router.post("/", async (req, res) => {
       return res.sendStatus(200);
     }
 
-    // ——— outros tipos ———
-    await sendText(
-      from,
-      "Recebi sua mensagem. Mande *menu* para ver opções."
-    );
+    // ——— tipos não tratados
+    await sendText(from, "Recebi sua mensagem. Mande *menu* para ver opções.");
     return res.sendStatus(200);
   } catch (e) {
     console.error("webhook.error", e?.response?.data || e.message);
+    // sempre 200 para o Meta não ficar reentregando com backoff
     return res.sendStatus(200);
   }
 });
