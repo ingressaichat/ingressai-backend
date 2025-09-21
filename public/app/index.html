@@ -1,21 +1,356 @@
 <!doctype html>
 <html lang="pt-BR">
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>IngressAI — Dashboard</title>
-<body style="font-family:system-ui,Inter,sans-serif;max-width:960px;margin:32px auto;padding:0 16px">
-  <h1>Dashboard IngressAI</h1>
-  <p>
-    <a href="/app/validator">Ir para o Validador</a> |
-    <a href="/app/login">Login</a>
-  </p>
-  <h2>Eventos</h2>
-  <pre id="out">Carregando...</pre>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="format-detection" content="telephone=no" />
+  <title>IngressAI — Ingressos em minutos, direto no WhatsApp</title>
+  <meta name="description" content="Compre ingressos em minutos pelo WhatsApp. Vitrine por cidade, checkout instantâneo, repasse T+0 e validação por QR Code." />
+  <meta name="robots" content="index,follow,max-image-preview:large" />
+
+  <!-- OG/Twitter -->
+  <meta property="og:title" content="IngressAI — Ingressos em minutos" />
+  <meta property="og:description" content="Vitrine por cidade, checkout instantâneo, QR Code antifraude e repasse T+0." />
+  <meta property="og:type" content="website" />
+  <meta property="og:image" content="https://ingressai.chat/logo_ingressai.png" />
+  <meta property="og:site_name" content="IngressAI" />
+  <meta property="og:locale" content="pt_BR" />
+  <meta name="twitter:card" content="summary_large_image" />
+
+  <meta name="theme-color" content="#2F7DD9" />
+  <meta name="color-scheme" content="light" />
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+  <link rel="icon" href="./favicon.png" type="image/png" sizes="32x32" />
+  <link rel="preload" as="image" href="./logo_ingressai.png" />
+
+  <style>
+    :root{--phi:1.618;--s0:8px;--s1:calc(var(--s0)*var(--phi));--s2:calc(var(--s1)*var(--phi));--s3:calc(var(--s2)*var(--phi));--s4:calc(var(--s3)*var(--phi));
+      --fs-0:1rem;--fs--1:calc(var(--fs-0)/var(--phi));--lh:1.45;--lh-compact:1.22;
+      --ink:#0b1220;--muted:#5b6b86;--bg:#f6f8fc;--card:#ffffff;
+      --blue-1:#4A93F0;--blue-2:#2F7DD9;--blue-3:#1B5FB3;--blue-soft:#eaf3ff;
+      --shadow:0 10px 28px rgba(47,125,217,.14),0 2px 6px rgba(11,18,32,.08);
+      --shadow-soft:0 6px 18px rgba(47,125,217,.12);--ring:0 0 0 2px rgba(74,147,240,.18);
+      --container-max:calc(680px*var(--phi));--btn-h:52px;--radius-pill:999px;--t-fast:.18s;--t-med:.28s}
+    *{box-sizing:border-box} html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font:16px/var(--lh) -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Ubuntu,Inter,system-ui,sans-serif}
+    a{color:inherit;text-decoration:none} :focus-visible{outline:none;box-shadow:var(--ring)}
+    .container{max-width:var(--container-max);margin:0 auto;padding:0 var(--s3)} .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);clip-path:inset(50%);white-space:nowrap;border:0}
+    .subtle{color:var(--muted)} :where(section,[id]){scroll-margin-top:96px}
+    header{position:sticky;top:0;z-index:20;background:#fff;border-bottom:1px solid #e7eefb;transition:box-shadow var(--t-fast),border-color var(--t-fast),background-color var(--t-fast)}
+    header.is-scrolled{box-shadow:var(--shadow);border-color:#e1e9fb}
+    .nav{display:flex;flex-direction:column;align-items:center;gap:var(--s1);padding:var(--s1) 0}
+    .nav-actions{display:flex;gap:10px}
+    .link-like{border:1px solid #e7eefb;background:#fff;border-radius:12px;padding:.5rem .75rem;box-shadow:var(--shadow-soft);font-weight:800}
+    .hero{padding:var(--s4) 0;opacity:calc(1 - var(--hero-p,0));transform:translateY(calc(-6px * var(--hero-p,0)));transition:opacity var(--t-fast) linear,transform var(--t-fast) linear}
+    .hero.is-hidden{opacity:0;height:0;padding:0;margin:0;overflow:hidden}
+    .hero h1{font-size:clamp(calc(1.25rem*var(--phi)),6.2vw,calc(1.25rem*var(--phi)*var(--phi)));line-height:var(--lh-compact);margin:0 0 var(--s2) 0;font-weight:850;text-align:center}
+    .hero-brand{display:grid;gap:var(--s1);place-items:center;margin-bottom:var(--s2)}
+    .badges{display:flex;gap:calc(var(--s1)*1.4);align-items:center;justify-content:center;flex-wrap:wrap;margin-top:6px}
+    .badge{display:inline-flex;align-items:center;gap:.55rem;padding:0;background:transparent;border-radius:0;box-shadow:none;font-weight:700;cursor:default;user-select:none}
+    .badge img{height:18px;width:auto;display:block}.badge span{color:#445570;font-weight:700;opacity:.95}
+    .btn{min-height:var(--btn-h);padding:0 var(--s2);border-radius:var(--radius-pill);border:1px solid #d6e4ff;display:inline-flex;align-items:center;justify-content:center;font-weight:800;letter-spacing:.2px;gap:10px;background:#fff;color:#0b1220;transition:transform .08s,box-shadow var(--t-fast)}
+    .btn--secondary{box-shadow:var(--shadow-soft)} .btn--ghost{background:#fff;border-color:#e1e8f6;box-shadow:none;color:#2d3b50}
+    .btn--sm{min-height:40px;padding:0 .9rem;font-size:.92rem} .btn.is-disabled{opacity:.6;pointer-events:none;filter:grayscale(.08)}
+    .cta-inline{display:flex;justify-content:flex-start;margin-top:calc(var(--s1)*-1);margin-bottom:var(--s1)}
+    .view{background:#fff;border:1px solid #e5ecff;color:#2d3b50;font-weight:800;cursor:pointer;padding:.3rem .7rem;border-radius:999px;align-self:center;min-height:28px;font-size:.82rem;margin-top:auto;box-shadow:0 6px 16px rgba(47,125,217,.16),0 2px 6px rgba(11,18,32,.08);transition:transform .12s,box-shadow var(--t-fast),filter var(--t-fast)}
+    .view:hover{transform:translateY(-1px);box-shadow:0 8px 20px rgba(47,125,217,.2),0 4px 10px rgba(11,18,32,.12)}
+    .proofs{padding:var(--s2) 0 var(--s3)} .features{display:grid;gap:var(--s0);grid-template-columns:repeat(2,minmax(0,1fr))}
+    @media(min-width:900px){.features{grid-template-columns:repeat(4,minmax(0,1fr))}}
+    .feature{background:#fff;border:1px solid #e5ecff;border-radius:12px;padding:calc(var(--s0)*1.25);display:flex;flex-direction:column;align-items:center;gap:var(--s0)}
+    .feature svg{stroke:currentColor;stroke-width:1.1;fill:none;stroke-linecap:round;stroke-linejoin:round;width:clamp(28px,8vw,36px);height:clamp(28px,8vw,36px)}
+    .feature .bolt{fill:currentColor;stroke:none}.feature .cut{fill:var(--card);stroke:none}.feature .qr-fill{fill:currentColor;stroke:none}
+    .feature .meta{display:flex;flex-direction:column;gap:calc(var(--s0)/var(--phi));align-items:center}
+    .feature strong{font-weight:800;font-size:calc(var(--fs-0)*1.02);line-height:1.2;text-align:center}
+    .feature small{color:var(--muted);font-size:calc(var(--fs--1));line-height:1.4;text-align:center}
+    .section{padding:calc(var(--s4)*1.1) 0;content-visibility:auto}
+    .section h2{font-size:clamp(calc(1rem*var(--phi)),3.8vw,calc(1.1rem*var(--phi)*var(--phi)));margin:0 0 var(--s2) 0;font-weight:800}
+    .filters{display:grid;grid-template-columns:1fr;gap:var(--s1);margin:0 0 var(--s1) 0}
+    @media(min-width:680px){.filters{grid-template-columns:1fr max-content}}
+    .search input{width:100%;border:1px solid #e5ecff;border-radius:999px;padding:.8rem 1rem;font:inherit;box-shadow:var(--shadow-soft);font-weight:600}
+    .chips{display:flex;gap:8px;align-items:center;overflow:auto;padding-bottom:2px}
+    .chip{appearance:none;border:1px solid #e5ecff;background:#fff;border-radius:999px;padding:.5rem .85rem;font-weight:800;color:#415577;cursor:pointer;white-space:nowrap}
+    .chip[aria-selected="true"]{background:var(--blue-2);color:#fff;border-color:rgba(27,95,179,.35);box-shadow:0 6px 14px rgba(47,125,217,.25)}
+    .cards{display:grid;grid-template-columns:repeat(1,minmax(0,1fr));gap:var(--s1)}
+    @media(min-width:700px){.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+    @media(min-width:1000px){.cards{grid-template-columns:repeat(3,minmax(0,1fr))}}
+    #lista-eventos.cards{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .card{background:var(--card);border-radius:calc(var(--s2));box-shadow:var(--shadow);padding:var(--s2);border:1px solid #eaf1ff;display:flex;flex-direction:column;gap:var(--s1);transition:transform .12s,box-shadow var(--t-fast);position:relative;overflow:hidden}
+    .card:hover{transform:translateY(-2px);box-shadow:0 14px 36px rgba(47,125,217,.16),0 3px 8px rgba(11,18,32,.12)}
+    .card-header{display:flex;align-items:flex-start;justify-content:space-between;gap:var(--s1)}
+    .card-title{font-weight:900;font-size:clamp(1rem,2.2vw,1.14rem);line-height:1.18;margin-bottom:4px}
+    .card-city{color:#2F7DD9;font-weight:800;font-size:.94rem}
+    .status-line{display:flex;align-items:center;gap:8px;margin-top:4px;font-weight:800;font-size:.86rem}
+    .status-dot{width:.6rem;height:.6rem;border-radius:999px;display:inline-block;flex:0 0 .6rem;border:1px solid rgba(0,0,0,.06)}
+    .status--soon .status-dot{background:#cfe3ff}.status--low .status-dot{background:#ffdede}.status--sold .status-dot{background:#dcdde3}
+    .status--soon{color:#1B5FB3}.status--low{color:#b64848}.status--sold{color:#6b7280}
+    .card-media{width:100%;aspect-ratio:1.35;border-radius:calc(var(--s1));border:1px solid #eaf1ff;background:radial-gradient(600px 280px at 20% 0%,rgba(47,125,217,.12),transparent 60%),linear-gradient(180deg,#fff,#f5f9ff);display:grid;place-items:center;color:#8fb5ff;font-weight:800}
+    .card-media img{width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block}
+    .sheet-backdrop{position:fixed;inset:0;background:rgba(11,18,32,.36);opacity:0;pointer-events:none;transition:opacity var(--t-fast)}
+    .sheet-backdrop.is-open{opacity:1;pointer-events:auto}
+    .sheet{position:fixed;left:0;right:0;bottom:0;height:72vh;max-height:760px;background:#fff;border-top-left-radius:24px;border-top-right-radius:24px;box-shadow:0 -24px 48px rgba(11,18,32,.16);transform:translateY(100%);transition:transform var(--t-med) cubic-bezier(.2,.7,.2,1);display:flex;flex-direction:column;padding:var(--s2);z-index:40}
+    .sheet.is-open{transform:translateY(0)} .sheet h3{margin:0;font-weight:900;line-height:1.2}
+    .sheet .sheet-body{overflow:auto;display:flex;flex-direction:column;gap:10px;padding-right:4px;padding-bottom:calc(20px + env(safe-area-inset-bottom))}
+    .sheet-media{width:100%;aspect-ratio:1.35;border:1px solid #eaf1ff;border-radius:16px;background:radial-gradient(600px 280px at 20% 0%,rgba(47,125,217,.12),transparent 60%),linear-gradient(180deg,#fff,#f5f9ff);margin-top:var(--s0);margin-bottom:var(--s1);overflow:hidden;display:block}
+    .sheet-media img{width:100%;height:100%;object-fit:cover;display:block}
+    .sheet-head{display:flex;flex-direction:column;gap:6px;align-items:flex-start;margin-top:0}
+    .status-chip{display:inline-flex;align-items:center;gap:6px;border:1px solid #e6eaf6;border-radius:999px;padding:.25rem .55rem;font-weight:800;font-size:.8rem}
+    .status-chip .dot{width:.5rem;height:.5rem;border-radius:50%}
+    .status-chip.low{color:#b64848;border-color:#ffdede;background:#fff7f7}
+    .status-chip.low .dot{background:#ffdede}
+    .status-chip.soon{color:#1B5FB3;border-color:#cfe3ff;background:#f3f8ff}
+    .status-chip.soon .dot{background:#cfe3ff}
+    .status-chip.sold{color:#6b7280;border-color:#e3e4ea;background:#fafbfc}
+    .status-chip.sold .dot{background:#dcdde3}
+    .std-card{background:#fff;border:1px solid #e5ecff;border-radius:calc(var(--s2));padding:var(--s2);box-shadow:var(--shadow-soft)}
+    .std-list{margin:0;padding-left:1.25rem;display:grid;gap:6px}
+    .model-grid{display:grid;grid-template-columns:1fr;gap:var(--s1);margin-top:var(--s1)}
+    @media(min-width:720px){.model-grid{grid-template-columns:repeat(2,1fr)}}
+    .model{appearance:none;background:#fff;border:1px solid #e5ecff;border-radius:calc(var(--s1));padding:var(--s1);display:flex;align-items:center;justify-content:center;gap:.6rem;cursor:pointer;text-align:center;box-shadow:var(--shadow-soft);font-weight:800;transition:transform var(--t-fast),box-shadow var(--t-fast),border-color var(--t-fast)}
+    .model[aria-selected="true"]{border-color:#e5ecff;box-shadow:var(--shadow-soft);transform:translateY(-1px) scale(1.02)}
+    .fee-row{display:none;place-content:center;margin-top:4px}
+    .fee-chip{display:inline-flex;align-items:center;gap:.5rem;padding:.45rem .8rem;border:1px solid #cfe0ff;border-radius:999px;background:#eef4ff;color:#2F7DD9;font-weight:800;box-shadow:var(--shadow-soft)}
+    .fee-row.is-visible{display:grid}
+    .org-panel{background:#fff;border:1px solid #e5ecff;border-radius:calc(var(--s2));padding:var(--s3);box-shadow:var(--shadow);margin-top:var(--s2)}
+    .panel-grid{display:grid;grid-template-columns:1fr;gap:var(--s2)}
+    @media(min-width:860px){ .panel-grid{grid-template-columns:1.1fr .9fr} }
+    .panel-card{background:#f9fbff;border:1px solid #e5ecff;border-radius:calc(var(--s1));padding:var(--s2)}
+    .cmd{display:grid;grid-template-columns:1fr max-content;gap:6px;align-items:center;background:#fff;border:1px solid #e5ecff;border-radius:12px;padding:10px 12px}
+    .cmd code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.95rem;color:#0b1220}
+    .calc{display:grid;gap:10px}
+    .calc-row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    .calc input{width:100%;border:1px solid #e5ecff;border-radius:12px;padding:.7rem .8rem;font:inherit}
+    .calc small{color:var(--muted)}
+    .calc-result{background:#fff;border:1px dashed #dbe5ff;border-radius:12px;padding:.75rem .9rem;font-weight:800;display:flex;justify-content:space-between;align-items:center}
+    .panel-cta{display:grid;grid-template-columns:1fr;gap:var(--s1);margin-top:var(--s2)}
+    @media(min-width:560px){.panel-cta{grid-template-columns:max-content max-content}}
+    footer{background:#fff;border-top:1px solid #e7eefb;margin-top:var(--s4)}
+    .foot{max-width:var(--container-max);margin:0 auto;padding:var(--s3) var(--s3)}
+    .foot-block{display:grid;gap:var(--s2);justify-items:center;text-align:center}
+    .link-row{display:flex;gap:16px;flex-wrap:wrap;justify-content:center;margin-bottom:var(--s1)}
+    .link-btn{width:44px;height:44px;display:grid;place-items:center;border:1px solid #e7eefb;background:#fff;border-radius:12px;box-shadow:var(--shadow-soft);color:#0b1220;padding:0}
+    .link-btn svg{width:22px;height:22px;stroke:currentColor;fill:none;stroke-linecap:round;stroke-linejoin:round}
+    .legal{display:flex;flex-wrap:wrap;gap:var(--s1);justify-content:center;margin-top:calc(var(--s0)*1.2)}
+    .legal a{text-decoration:underline;font-weight:600}
+    .foot-meta{display:flex;flex-wrap:wrap;gap:10px;align-items:center;color:#667792;justify-content:center}
+    @media print{header,footer,.cta-row,.toast,button.view{display:none!important}.container{max-width:100%;padding:0}.card,.panel-card,.std-card{box-shadow:none!important;border:1px solid #999!important}.status-line{color:#000!important}a:link,a:visited{text-decoration:underline;color:#000!important}a[href]:after{content:" <" attr(href) ">";font-size:.9em}}
+    .sheet-close{position:absolute;right:10px;top:10px;appearance:none;background:#fff;border:1px solid #ffd6d6;color:#c94747;border-radius:14px;padding:.8rem;display:grid;place-items:center;box-shadow:0 8px 20px rgba(201,71,71,.18);z-index:9999;touch-action:manipulation;cursor:pointer}
+    .sheet-close:hover{background:#fff5f5}
+    .sheet-close svg{width:22px;height:22px}
+
+    /* ==== Login Modal ==== */
+    .modal{position:fixed;inset:0;display:none;place-items:center;background:rgba(11,18,32,.36);z-index:50}
+    .modal.is-open{display:grid}
+    .modal-card{background:#fff;border:1px solid #e5ecff;border-radius:16px;box-shadow:var(--shadow);padding:var(--s2);width:min(520px,92vw);display:grid;gap:12px}
+    .modal-card h3{margin:0;font-weight:900}
+    .modal-actions{display:flex;gap:10px;justify-content:flex-end}
+    .input{width:100%;border:1px solid #e5ecff;border-radius:12px;padding:.7rem .8rem;font:inherit}
+    .hint{color:#5b6b86;font-size:.9rem}
+    .tag{display:inline-flex;align-items:center;gap:6px;border:1px solid #e6eaf6;border-radius:999px;padding:.2rem .55rem;font-weight:800;font-size:.78rem}
+    .tag.on{background:#eef9f2;border-color:#cfead9;color:#0b7a3b}
+    .tag.off{background:#fff6f6;border-color:#ffd6d6;color:#a33a3a}
+
+    /* ==== Validador ==== */
+    .validator{background:#fff;border:1px solid #e5ecff;border-radius:16px;padding:var(--s2);box-shadow:var(--shadow-soft)}
+    .valid{color:#0b7a3b}
+    .invalid{color:#a33a3a}
+  </style>
+
+  <!-- Config da API do backend (Railway) -->
   <script>
-    fetch('/api/events')
-      .then(r => r.json())
-      .then(j => { out.textContent = JSON.stringify(j, null, 2); })
-      .catch(e => { out.textContent = 'Falha ao carregar eventos: ' + e; });
+    window.INGRESSAI_API = "https://ingressai-backend-production.up.railway.app/api";
   </script>
+  <!-- JS principal (com vitrine, organizadores, OTP e validador) -->
+  <script src="./app/app.js" defer></script>
+</head>
+<body>
+  <header role="banner">
+    <div class="container nav">
+      <div class="nav-actions">
+        <a href="#vitrine" class="link-like">Vitrine</a>
+        <a href="#organizadores" class="link-like" id="nav-org">Organizadores</a>
+        <a href="#validador" class="link-like" id="nav-val" hidden>Validador</a>
+        <a href="#" class="link-like" id="nav-login" data-login>Entrar</a>
+        <span class="tag off" id="auth-indicator" aria-live="polite">offline</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="container" role="main">
+    <section class="hero" aria-labelledby="hero-title">
+      <div class="hero-brand">
+        <img src="./logo_ingressai.png" alt="IngressAI" width="160" height="160" loading="eager" fetchpriority="high" />
+        <div class="badges" aria-label="Selos">
+          <span class="badge" aria-label="Powered by Meta Business Platform">
+            <img src="./meta.png" alt="Meta" width="24" height="24" loading="lazy" decoding="async" />
+            <span>Powered by Meta Business Platform</span>
+          </span>
+          <span class="badge" aria-label="WhatsApp Business API">
+            <img src="./whatsapp_business.png" alt="WhatsApp Business" width="24" height="24" loading="lazy" decoding="async" />
+            <span>WhatsApp Business API</span>
+          </span>
+        </div>
+      </div>
+      <h1 id="hero-title">Crie eventos com a IngressAI.</h1>
+    </section>
+
+    <div class="cta-inline">
+      <a href="#organizadores" class="btn btn--secondary btn--sm" id="cta-organizadores" aria-label="Abrir soluções para organizadores">Soluções para organizadores</a>
+    </div>
+
+    <section class="proofs" aria-labelledby="proofs-title">
+      <h2 id="proofs-title" class="sr-only">Provas de valor</h2>
+      <div class="features" aria-label="Provas">
+        <div class="feature">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3.6" y="6.6" width="16.8" height="10.8" rx="2.4" />
+            <circle class="cut" cx="3.6" cy="12" r="1" />
+            <circle class="cut" cx="20.4" cy="12" r="1" />
+            <path class="bolt" d="M12 9.4 L10.2 12 h1.55 l-.75 3.0 L14 11.2 h-1.6 z" />
+          </svg>
+          <div class="meta"><strong>Venda automatizada</strong><small>via WhatsApp</small></div>
+        </div>
+        <div class="feature">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 10a 8 8 0 0 1 14-2" />
+            <path d="M4 6v4h4" />
+            <path d="M20 14a 8 8 0 0 1-14 2" />
+            <path d="M20 18v-4h-4" />
+          </svg>
+          <div class="meta"><strong>Repasse imediato</strong><small>via Pix</small></div>
+        </div>
+        <div class="feature">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7" rx="1.1" />
+            <rect class="qr-fill" x="5.6" y="5.6" width="2.8" height="2.8" rx=".35" />
+            <rect x="14" y="3" width="7" height="7" rx="1.1" />
+            <rect class="qr-fill" x="16.6" y="5.6" width="2.8" height="2.8" rx=".35" />
+            <rect x="3" y="14" width="7" height="7" rx="1.1" />
+            <rect class="qr-fill" x="5.6" y="16.6" width="2.8" height="2.8" rx=".35" />
+          </svg>
+          <div class="meta"><strong>QR Code Antifraude</strong><small>+ validador web</small></div>
+        </div>
+        <div class="feature">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M9 7h11M9 12h11M9 17h11" />
+            <rect x="4" y="6" width="2.2" height="2.2" rx=".35" />
+            <rect x="4" y="11" width="2.2" height="2.2" rx=".35" />
+            <rect x="4" y="16" width="2.2" height="2.2" rx=".35" />
+          </svg>
+          <div class="meta"><strong>Dashboard</strong><small>Ingressos & acesso</small></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="vitrine" class="section" aria-labelledby="vitrine-title" tabindex="-1">
+      <h2 id="vitrine-title">Eventos em destaque</h2>
+      <div class="filters" aria-label="Filtros">
+        <div class="search">
+          <label for="busca-eventos" class="sr-only">Buscar evento</label>
+          <input type="search" id="busca-eventos" placeholder="Buscar evento" inputmode="search" autocomplete="off" aria-describedby="vitrine-title" />
+        </div>
+        <div id="filtro-cidades" class="chips" role="tablist" aria-label="Filtrar por cidade"></div>
+      </div>
+      <div class="cards" id="lista-eventos" aria-live="polite"></div>
+    </section>
+
+    <!-- === ORGANIZADORES === -->
+    <section id="organizadores" class="section" aria-labelledby="orgs-title" tabindex="-1" hidden>
+      <h2 id="orgs-title">Soluções para organizadores</h2>
+      <div id="std-card" class="std-card"></div>
+      <div id="org-models" class="model-grid" role="tablist" aria-label="Modelos de organizador"></div>
+      <div class="fee-row" id="fee-row"><span class="fee-chip" id="fee-chip">Taxa</span></div>
+
+      <div class="org-panel is-disabled" id="org-detail" role="tabpanel" tabindex="0" aria-live="polite">
+        <div class="panel-grid">
+          <div class="panel-card">
+            <details class="disclosure" open>
+              <summary class="disclosure__summary">Calculadora &amp; Setup</summary>
+              <div class="calc" id="calc-box" data-fee="">
+                <div class="calc-row">
+                  <div>
+                    <label for="preco">Preço</label>
+                    <input id="preco" class="input" type="text" inputmode="decimal" placeholder="R$ 60,00" aria-label="Preço do ingresso" disabled />
+                  </div>
+                  <div>
+                    <label for="qtd">Qtd</label>
+                    <input id="qtd" class="input" type="number" placeholder="1" min="1" step="1" aria-label="Quantidade de ingressos" disabled />
+                  </div>
+                </div>
+                <small id="calc-note" class="hint">Selecione um plano acima para aplicar a taxa.</small>
+                <div class="calc-result" id="calc-gross-row"><span>Total bruto</span><strong id="calc-gross">R$ 0,00</strong></div>
+                <div class="calc-result"><span>Você recebe</span><strong id="calc-net">R$ 0,00</strong></div>
+                <div class="panel-cta" style="margin-top:var(--s2)">
+                  <a class="btn btn--secondary is-disabled" id="org-quick" aria-disabled="true">Criar evento (WhatsApp)</a>
+                  <a class="btn btn--ghost" id="open-dashboard" href="./app/login.html">Entrar no Dashboard</a>
+                </div>
+              </div>
+            </details>
+          </div>
+
+          <div class="panel-card">
+            <details class="disclosure" open>
+              <summary class="disclosure__summary">Dashboard</summary>
+              <div class="cmd">
+                <div>
+                  <p><strong>Acompanhe vendas</strong>, baixe lista de compradores e <strong>valide QR Code</strong> no modo Validador.</p>
+                  <p>Acesso por <em>código de verificação</em> enviado ao seu WhatsApp. <a id="open-login-inline" href="./app/login.html">Abrir login</a>.</p>
+                </div>
+                <a class="btn btn--secondary btn--sm" id="open-dashboard-2" href="./app/login.html">Abrir Dashboard</a>
+              </div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- === VALIDADOR (só visível se autenticado como organizador) === -->
+    <section id="validador" class="section" aria-labelledby="val-title" hidden>
+      <h2 id="val-title">Validador</h2>
+      <div class="validator">
+        <p class="hint">Cole ou digite o <strong>código</strong> do QR (formato <code>ingressai:ticket:&lt;code&gt;</code> ou apenas o <em>code</em>).</p>
+        <div style="display:grid;gap:10px;grid-template-columns:1fr max-content">
+          <input id="val-code" class="input" placeholder="ex.: ingressai:ticket:ABCD1234EF" autocomplete="off" />
+          <button id="val-check" class="btn btn--secondary btn--sm">Checar</button>
+        </div>
+        <div id="val-result" style="margin-top:10px"></div>
+      </div>
+    </section>
+
+    <!-- Sheet -->
+    <div class="sheet-backdrop" id="sheet-backdrop" aria-hidden="true"></div>
+    <aside class="sheet" id="sheet" aria-hidden="true" role="dialog" aria-modal="true">
+      <button type="button" class="sheet-close" id="sheet-close" data-close="sheet" aria-label="Fechar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 6L18 18M18 6L6 18"/></svg>
+      </button>
+      <div class="sheet-body" id="sheet-body"></div>
+    </aside>
+  </main>
+
+  <footer role="contentinfo">
+    <div class="foot">
+      <div class="foot-block">
+        <div class="link-row" aria-label="Canais">
+          <a class="link-btn" href="mailto:contato@ingressai.chat" aria-label="Enviar e-mail">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"></rect><path d="M4 6l8 6 8-6"></path></svg>
+          </a>
+          <a class="link-btn" href="https://instagram.com/ingressai" target="_blank" rel="noopener noreferrer" aria-label="Abrir Instagram">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="4"></rect><circle cx="12" cy="12" r="5"></circle><circle cx="17" cy="7" r="1.2" fill="currentColor" stroke="none"></circle></svg>
+          </a>
+          <a class="link-btn" href="https://wa.me/5534999992747" target="_blank" rel="noopener noreferrer" aria-label="Falar no WhatsApp">
+            <svg viewBox="0 0 90 90" aria-hidden="true" focusable="false"><path d="M0.576 44.596C0.573 52.456 2.626 60.129 6.53 66.892L0.201 90l23.65-6.201c6.516 3.553 13.852 5.426 21.318 5.429h0.019c24.586 0 44.601-20.009 44.612-44.597 0.004-11.917-4.633-23.122-13.055-31.552C68.321 4.65 57.121 0.005 45.188 0 20.597 0 0.585 20.005 0.575 44.595m14.083 21.132l-0.883-1.402c-3.712-5.902-5.671-12.723-5.669-19.726C8.115 24.161 24.748 7.532 45.201 7.532c9.905 0.004 19.213 3.865 26.215 10.871 7.001 7.006 10.854 16.32 10.851 26.224-0.009 20.439-16.643 37.068-37.08 37.068h-0.015c-6.655-0.004-13.181-1.79-18.872-5.168l-1.355-0.803-14.035 3.68 4.956-13.937z" fill="currentColor"/><path d="M34.038 25.95c-0.835-1.856-1.714-1.894-2.508-1.926-0.65-0.028-1.394-0.026-2.136-0.026-0.744 0-1.951 0.279-2.972 1.394-1.022 1.116-3.902 3.812-3.902 9.296 0 5.485 3.995 10.784 4.551 11.529 0.558 0.743 7.712 12.357 19.041 16.825 9.416 3.713 11.333 2.975 13.376 2.789 2.044-0.186 6.595-2.696 7.524-5.299 0.929-2.603 0.929-4.834 0.651-5.299-0.279-0.465-1.022-0.744-2.137-1.301-1.115-0.558-6.595-3.254-7.617-3.626-1.022-0.372-1.765-0.557-2.509 0.559-0.743 1.115-2.878 3.625-3.528 4.368-0.65 0.745-1.301 0.838-2.415 0.28-1.115-0.559-4.705-1.735-8.964-5.532-3.314-2.955-5.551-6.603-6.201-7.719-0.65-1.115-0.069-1.718 0.489-2.274 0.501-0.499 1.115-1.301 1.673-1.952 0.556-0.651 0.742-1.116 1.113-1.859 0.372-0.744 0.186-1.395-0.093-1.953-0.805-1.58-2.971-7.092-3.962-9.296" fill="currentColor"/></svg>
+          </a>
+        </div>
+        <div class="legal" aria-label="Links">
+          <a href="./politica.html">Política de privacidade</a>
+          <a href="./termos.html">Termos de uso</a>
+          <a href="./excluir.html">Excluir meus dados</a>
+        </div>
+        <div class="foot-meta" aria-label="Informações">
+          <strong>IngressAI</strong><span>•</span><span>CNPJ 42.948.399/0001-87</span>
+        </div>
+      </div>
+    </div>
+  </footer>
+
+  <script type="application/ld+json">{"@context":"https://schema.org","@type":"Organization","name":"IngressAI","url":"https://ingressai.chat/","logo":"https://ingressai.chat/logo_ingressai.png","sameAs":["https://instagram.com/ingressai"],"contactPoint":[{"@type":"ContactPoint","contactType":"customer support","areaServed":"BR","availableLanguage":"pt-BR"}]}</script>
 </body>
 </html>

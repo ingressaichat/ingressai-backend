@@ -1,40 +1,43 @@
 import PDFDocument from "pdfkit";
-import QRCode from "qrcode";
+import QR from "qrcode";
+import { fmtDateBR } from "../utils.mjs";
+import stream from "stream";
 
-export async function buildTicketPDFStream({ brand, event, ticket, validateUrl }) {
-  const doc = new PDFDocument({ size: "A4", margin: 36 });
-  doc.info.Title = `${brand?.name || "Ingresso"} - ${event?.title || "Evento"}`;
+export async function buildTicketPDF({ ticket, event, brand = "IngressAI" }) {
+  const doc = new PDFDocument({ size: "A4", margin: 48 });
+  const bufs = [];
+  doc.on("data", (d) => bufs.push(d));
+  const end = new Promise((r) => doc.on("end", r));
 
-  // Cabeçalho
-  doc.fontSize(18).font("Helvetica-Bold").text(brand?.name || "IngressAI");
-  doc.moveDown(0.6);
+  doc.fontSize(22).font("Helvetica-Bold").text(`${brand} — Ingresso`, { align: "right" });
 
-  // Evento
-  doc.fontSize(16).text(event?.title || "Evento");
-  doc.moveDown(0.2);
-  const when = event?.date ? new Date(event.date).toLocaleString("pt-BR") : "A confirmar";
-  doc.fontSize(12).font("Helvetica").text(`${event?.city || ""} — ${when}`);
-  doc.text(`Local: ${event?.venue || "A confirmar"}`);
   doc.moveDown(1);
+  doc.fontSize(28).font("Helvetica-Bold").text(event.title);
+  doc.fontSize(12).font("Helvetica").fillColor("#444").text(`${event.venue || "Local a confirmar"} — ${event.city || ""}`);
+  doc.text(fmtDateBR(event.date));
 
-  // Comprador
-  doc.font("Helvetica-Bold").text("Ingresso:", { continued: true }).font("Helvetica").text(`  #${ticket.code}`);
-  doc.text(`Nome: ${ticket.name}`);
+  doc.moveDown(1.2);
+  doc.fontSize(14).fillColor("#000").text(`Nome: ${ticket.buyerName || "Participante"}`);
   doc.text(`Quantidade: ${ticket.qty || 1}`);
-  doc.moveDown(1);
+  doc.text(`Ticket #${ticket.id}  •  Código: ${ticket.code}`);
 
-  // QR
-  const qrData = validateUrl;
-  const qrPng = await QRCode.toBuffer(qrData, { type: "png", errorCorrectionLevel: "H", margin: 1, width: 360 });
-  const x = doc.page.width - 36 - 180;
-  const y = doc.y;
-  doc.image(qrPng, x, y, { width: 180, height: 180 });
-  doc.rect(36, y, doc.page.width - 72 - 200, 180).strokeColor("#ddd").stroke();
+  const qrDataUrl = await QR.toDataURL(ticket.qrcode || ticket.code || String(ticket.id));
+  const base64 = qrDataUrl.split(",")[1];
+  const img = Buffer.from(base64, "base64");
+  doc.moveDown(1.2);
+  doc.image(img, { width: 220 });
 
-  doc.moveDown(10);
-  doc.fontSize(10).fillColor("#666").text(`Validação: ${qrData}`);
-  doc.moveDown(0.4).text("Apresente este QR Code na entrada. Evite compartilhar seu ingresso.");
+  doc.moveDown(1.2);
+  doc.fontSize(10).fillColor("#444").text("Apresente este QR Code na entrada. Uso único.", { width: 480 });
 
   doc.end();
-  return doc;
+  await end;
+  return Buffer.concat(bufs);
+}
+
+export function bufferToStream(buf) {
+  const readable = new stream.Readable({ read() {} });
+  readable.push(buf);
+  readable.push(null);
+  return readable;
 }

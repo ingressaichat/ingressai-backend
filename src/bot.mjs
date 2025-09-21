@@ -1,24 +1,18 @@
-import { Router } from 'express';
-import { checkAdmin } from '../config.mjs';
-import { readStore } from '../utils.mjs';
-import { sendText } from '../lib/waba.mjs';
+import express from "express";
 
-const r = Router();
+const bot = express.Router();
+bot.use(express.json({ limit: "1mb" }));
 
-/** POST /bot/broadcast { text }  — envia para compradores de todos os eventos */
-r.post('/bot/broadcast', async (req, res) => {
-  if (!checkAdmin(req)) return res.status(401).json({ error: 'unauthorized' });
-  const { text } = req.body || {};
-  if (!text) return res.status(400).json({ error: 'text obrigatório' });
+// usa o seu webhook real se existir; senão, stub para não derrubar o boot
+let webhookRouter;
+try {
+  ({ default: webhookRouter } = await import("./routes/webhook.mjs"));
+} catch (e) {
+  console.warn("[warn] webhook.mjs não encontrado, usando stub:", e?.message);
+  const stub = express.Router();
+  stub.get("/", (_req, res) => res.json({ ok: true, msg: "webhook stub" }));
+  webhookRouter = stub;
+}
 
-  const orders = await readStore('orders');
-  const phones = Array.from(new Set(orders.map(o => o?.buyer?.phone).filter(Boolean)));
-
-  let sent = 0;
-  for (const p of phones) {
-    try { await sendText(p, text); sent++; } catch (e) { console.warn('broadcast fail', p, e.message); }
-  }
-  res.json({ ok: true, recipients: phones.length, sent });
-});
-
-export default r;
+bot.use("/webhook", webhookRouter);
+export default bot;

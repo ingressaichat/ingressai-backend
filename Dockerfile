@@ -1,18 +1,17 @@
-cat > Dockerfile <<'EOF'
 FROM node:22-alpine
 
 WORKDIR /app
 
-# Instala só prod (evita fragilidade do npm ci com lock divergente)
+RUN apk add --no-cache fontconfig ttf-dejavu
+
 COPY package*.json ./
 RUN npm i --omit=dev
 
-# Código e estáticos
-COPY src ./src
 COPY public ./public
+COPY src ./src
 
 ENV NODE_ENV=production
 ENV PORT=8080
+ENV NODE_OPTIONS="--enable-source-maps --unhandled-rejections=strict"
 
-CMD ["node", "src/server.mjs"]
-EOF
+CMD ["node","src/server.mjs"]

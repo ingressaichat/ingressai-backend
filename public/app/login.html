@@ -1,32 +1,35 @@
 <!doctype html>
-<html lang="pt-BR">
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>IngressAI — Login</title>
-<body style="font-family:system-ui,Inter,sans-serif;max-width:560px;margin:32px auto;padding:0 16px">
-  <h1>Login</h1>
-  <p>Digite seu WhatsApp (DDI+DDD+NÚMERO):</p>
-  <input id="p" placeholder="5534999992747" style="width:100%;padding:8px;font-size:16px" />
-  <button id="b" style="margin-top:12px;padding:8px 12px;font-size:16px">Enviar código</button>
-  <p id="m"></p>
-  <script>
-    const p = document.getElementById('p');
-    const b = document.getElementById('b');
-    const m = document.getElementById('m');
-    b.onclick = async () => {
-      const to = (p.value || '').replace(/\D/g, '');
-      m.textContent = 'Enviando...';
-      try {
-        const r = await fetch('/api/test/ping-login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ phone: to })
-        });
-        m.textContent = r.ok ? 'Código enviado (demo). Veja seu WhatsApp.' : 'Falhou.';
-      } catch (e) {
-        m.textContent = 'Erro: ' + e;
-      }
-    };
-  </script>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Login — IngressAI</title>
+<style>
+  body{font:16px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Ubuntu,Inter,system-ui,sans-serif;background:#f6f8fc;margin:0;color:#0b1220}
+  .wrap{max-width:720px;margin:0 auto;padding:24px}
+  .card{background:#fff;border:1px solid #e5ecff;border-radius:16px;box-shadow:0 10px 28px rgba(47,125,217,.14);padding:16px}
+  .btn{border:1px solid #d6e4ff;border-radius:999px;min-height:44px;padding:0 16px;background:#fff;font-weight:800;box-shadow:0 6px 18px rgba(47,125,217,.12)}
+  .muted{color:#5b6b86}
+</style>
+<script>
+  const API  = (location.origin + "/api").replace(/\/+$/,"");
+  const ROOT = API.replace(/\/api$/,"");
+
+  async function pingSession(){
+    const ok = await fetch(API + "/auth/session", {credentials:"include"})
+      .then(r=>r.ok)
+      .catch(()=>false);
+
+    if(ok){ location.replace(ROOT + "/app/dashboard.html"); return; }
+    document.getElementById("msg").textContent =
+      "Sessão não encontrada. Abra o login pela landing para receber o código.";
+  }
+  addEventListener("DOMContentLoaded", pingSession);
+</script>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <h1>Login</h1>
+      <p id="msg" class="muted">Verificando sessão…</p>
+      <p><a class="btn" href="/" rel="external">Voltar</a></p>
+    </div>
+  </div>
 </body>
-</html>
