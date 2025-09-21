@@ -1,57 +1,70 @@
-// src/routes/auth.mjs
 import { Router } from "express";
-import { requestOTPInternal, verifyOTPInternal, setSessionCookie } from "../lib/auth.mjs";
-import { sendText } from "../lib/wa.mjs";
 
 const router = Router();
 
-/** POST /api/auth/request { phone } */
-router.post("/auth/request", async (req, res) => {
+// store em memória (trocar por Redis/DB em prod)
+const otpStore = new Map(); // key: phone, value: { code, exp }
+
+function genCode() {
+  // 4–6 dígitos
+  return String(Math.floor(100000 + Math.random() * 900000)).slice(0, 6);
+}
+
+router.post("/request", async (req, res) => {
   try {
-    const { phone } = req.body || {};
-    if (!phone) return res.status(400).json({ ok:false, error:"phone_required" });
-    await requestOTPInternal(sendText, String(phone));
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("auth.request", err?.message || err);
-    res.status(500).json({ ok:false, error:"server_error" });
+    const phone = String(req.body?.phone || "").replace(/\D+/g, "");
+    if (!phone || phone.length < 12) {
+      return res.status(400).json({ ok: false, error: "phone_invalid" });
+    }
+    const code = genCode();
+    const exp = Date.now() + 5 * 60 * 1000; // 5 min
+    otpStore.set(phone, { code, exp });
+
+    // TODO: enviar via WhatsApp aqui (wa.sendMessage...)
+    console.log(`[AUTH] OTP para ${phone}: ${code}`);
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("auth.request.error", e);
+    return res.status(500).json({ ok: false });
   }
 });
 
-/** POST /api/auth/verify { phone, code } */
-router.post("/auth/verify", async (req, res) => {
+router.post("/verify", async (req, res) => {
   try {
-    const { phone, code } = req.body || {};
-    if (!phone || !code) return res.status(400).json({ ok:false, error:"missing_params" });
-    const r = verifyOTPInternal(String(phone), String(code));
-    if (!r.ok) return res.status(401).json({ ok:false, error: r.reason || "invalid_code" });
-    setSessionCookie(res, { phone: String(phone), isOrganizer: !!r.isOrganizer, isAdmin: !!r.isAdmin });
-    res.json({ ok: true, isOrganizer: !!r.isOrganizer });
-  } catch (err) {
-    console.error("auth.verify", err?.message || err);
-    res.status(500).json({ ok:false, error:"server_error" });
+    const phone = String(req.body?.phone || "").replace(/\D+/g, "");
+    const code = String(req.body?.code || "").replace(/\D+/g, "");
+    const item = otpStore.get(phone);
+
+    if (!item || Date.now() > item.exp || item.code !== code) {
+      return res.status(401).json({ ok: false, error: "otp_invalid" });
+    }
+
+    // “validação” ok → emite um token simples (substitua por JWT real)
+    const token = Buffer.from(`${phone}:${Date.now()}`).toString("base64");
+
+    // seta cookie cross-site (landing -> backend)
+    res.cookie("ia_session", token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      path: "/",
+      maxAge: 1000 * 60 * 60 * 24 * 30, // 30d
+    });
+
+    // (opcional) limpa OTP após uso
+    otpStore.delete(phone);
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("auth.verify.error", e);
+    return res.status(500).json({ ok: false });
   }
 });
 
-/** GET /api/auth/session */
-router.get("/auth/session", (req, res) => {
-  try {
-    // a leitura da sessão é feita via /app/login no server; aqui mantemos simples
-    res.json({ ok: true });
-  } catch {
-    res.status(500).json({ ok:false, error:"server_error" });
-  }
-});
-
-/** POST /api/auth/logout */
-router.post("/auth/logout", (_req, res) => {
-  try {
-    res.clearCookie("ia_session", { path:"/" });
-    res.json({ ok:true });
-  } catch (err) {
-    console.error("auth.logout", err?.message || err);
-    res.status(500).json({ ok:false, error:"server_error" });
-  }
+router.get("/session", (req, res) => {
+  const has = Boolean(req.cookies?.ia_session);
+  return res.json({ ok: has });
 });
 
 export default router;
