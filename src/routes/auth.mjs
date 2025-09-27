@@ -1,114 +1,83 @@
-// src/routes/auth.mjs
 import { Router } from "express";
+import crypto from "node:crypto";
 import { sendOtp } from "../lib/wa.mjs";
-import {
-  signSession,
-  verifySession,
-  getCookieFromReq,
-  setAuthCookie,
-  clearAuthCookie,
-  sessionTtl,
-} from "../lib/session.mjs";
 
 const router = Router();
 
-// memória simples p/ OTP (troque por Redis/DB em prod real)
-const OTP_STORE = new Map(); // key: phone -> { code, exp }
+const OTP_TTL_MS = 5 * 60 * 1000;
+const otps = new Map(); // phone -> { hash, exp, attempts }
 
-// utils
-const onlyDigits = (s = "") => String(s).replace(/\D+/g, "");
-const ADMIN_PHONES = String(process.env.ADMIN_PHONES || "")
-  .split(",").map(s => onlyDigits(s)).filter(Boolean);
+function onlyDigits(v = "") { return String(v).replace(/\D+/g, ""); }
+function makeCode() { return String(crypto.randomInt(100000, 1000000)); }
+function hashOtp(code) { return crypto.createHash("sha256").update(code).digest("hex"); }
 
-function putOtp(phone, code, ttlSec = 300) {
-  const exp = Date.now() + ttlSec * 1000;
-  OTP_STORE.set(phone, { code, exp });
+// gera/renova token CSRF (double-submit)
+router.get("/csrf", (req, res) => {
+  const token = crypto.randomBytes(16).toString("base64url");
+  res.cookie("ia_csrf", token, {
+    httpOnly: false,
+    secure: true,
+    sameSite: "None",
+    path: "/",
+    maxAge: 3600e3,
+  });
+  res.json({ ok:true, token });
+});
+function checkCsrf(req, res, next) {
+  const hdr = req.get("X-CSRF-Token");
+  const cki = req.cookies?.ia_csrf;
+  if (!hdr || !cki || hdr !== cki) return res.status(403).json({ ok:false, error:"csrf" });
+  next();
 }
-function takeOtp(phone) {
-  const it = OTP_STORE.get(phone);
-  if (!it) return null;
-  if (Date.now() > it.exp) { OTP_STORE.delete(phone); return null; }
-  return it;
-}
-function trashOtp(phone) { OTP_STORE.delete(phone); }
 
-// ====== POST /api/auth/request  ======
-router.post("/request", async (req, res) => {
+router.post("/request", checkCsrf, async (req, res) => {
+  try {
+    const raw = req.body?.phone || "";
+    const phone = onlyDigits(raw);
+    if (phone.length < 10) return res.status(400).json({ ok:false, error:"phone_invalid" });
+
+    const code = makeCode();
+    const exp = Date.now() + OTP_TTL_MS;
+    otps.set(phone, { hash: hashOtp(code), exp, attempts: 0 });
+
+    console.log("[AUTH] OTP gerado para %s", phone);
+    await sendOtp(phone, code).catch(err => console.error("sendOtp.error", err?.message || err));
+    return res.json({ ok:true });
+  } catch (e) {
+    console.error("auth.request.error", e?.stack || e);
+    return res.status(500).json({ ok:false, error:"server_error" });
+  }
+});
+
+router.post("/verify", checkCsrf, (req, res) => {
   try {
     const phone = onlyDigits(req.body?.phone || "");
-    if (!phone || phone.length < 10) {
-      return res.status(400).json({ ok: false, error: "phone_invalid" });
-    }
-    // gera OTP 6 dígitos
-    const code = (Math.floor(100000 + Math.random() * 900000)).toString();
-    putOtp(phone, code, 300);
+    const code  = String(req.body?.code || "").trim();
+    const item = otps.get(phone);
+    if (!item) return res.status(401).json({ ok:false, error:"otp_invalid" });
+    if (item.exp < Date.now()) { otps.delete(phone); return res.status(401).json({ ok:false, error:"otp_expired" }); }
+    if (item.attempts >= 5) { otps.delete(phone); return res.status(429).json({ ok:false, error:"otp_locked" }); }
+    if (item.hash !== hashOtp(code)) { item.attempts++; return res.status(401).json({ ok:false, error:"otp_invalid" }); }
+    otps.delete(phone);
 
-    try {
-      await sendOtp(phone, code);
-      console.log(`[AUTH] OTP gerado para ${phone}: ${code} (expira em 300s)`);
-      return res.json({ ok: true });
-    } catch (e) {
-      console.error("[AUTH] sendOtp error:", e?.message || e);
-      return res.status(500).json({ ok: false, error: "otp_send_fail" });
-    }
-  } catch (err) {
-    console.error("auth.request.error", err);
-    return res.status(500).json({ ok: false, error: "server_error" });
-  }
-});
+    const sid = crypto.randomBytes(32).toString("base64url");
+    // salva sessão num storage atrelado ao server (ex.: req.app.locals.sessions)
+    const store = req.app.locals.sessions;
+    const now = Date.now();
+    store.set(sid, { phone, isOrganizer: true, exp: now + 7*24*3600e3 }); // ajuste isOrganizer conforme sua regra
 
-// ====== POST /api/auth/verify  ======
-router.post("/verify", async (req, res) => {
-  try {
-    const phone = onlyDigits(req.body?.phone || "");
-    const code  = onlyDigits(req.body?.code  || "");
-    if (!phone || !code) {
-      return res.status(400).json({ ok: false, error: "invalid_params" });
-    }
+    res.cookie("ia_session", sid, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "None",
+      path: "/",
+      maxAge: 7*24*3600e3,
+    });
 
-    const entry = takeOtp(phone);
-    if (!entry || entry.code !== code) {
-      return res.status(401).json({ ok: false, error: "otp_invalid" });
-    }
-    // consome OTP
-    trashOtp(phone);
-
-    const isAdmin = ADMIN_PHONES.includes(phone);
-    const token = signSession({ phone, role: isAdmin ? "admin" : "user" }, sessionTtl());
-    setAuthCookie(res, token, sessionTtl());
-
-    return res.json({ ok: true, user: { phone, role: isAdmin ? "admin" : "user" } });
-  } catch (err) {
-    console.error("auth.verify.error", err);
-    return res.status(500).json({ ok: false, error: "server_error" });
-  }
-});
-
-// ====== GET /api/auth/session  ======
-router.get("/session", (req, res) => {
-  try {
-    const token = getCookieFromReq(req);
-    if (!token) return res.status(401).json({ ok: false, error: "no_session" });
-
-    const data = verifySession(token);
-    if (!data) return res.status(401).json({ ok: false, error: "invalid_session" });
-
-    const { phone, role, exp } = data;
-    return res.json({ ok: true, user: { phone, role }, exp });
-  } catch (err) {
-    console.error("auth.session.error", err);
-    return res.status(500).json({ ok: false, error: "server_error" });
-  }
-});
-
-// ====== POST /api/auth/logout  ======
-router.post("/logout", (req, res) => {
-  try {
-    clearAuthCookie(res);
-    return res.json({ ok: true });
-  } catch (err) {
-    console.error("auth.logout.error", err);
-    return res.status(500).json({ ok: false, error: "server_error" });
+    return res.json({ ok:true, isOrganizer: true });
+  } catch (e) {
+    console.error("auth.verify.error", e?.stack || e);
+    return res.status(500).json({ ok:false, error:"server_error" });
   }
 });
 
