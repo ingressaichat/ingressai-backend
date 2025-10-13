@@ -1,34 +1,81 @@
-import crypto from "crypto";
-import { format } from "date-fns";
-import { ptBR } from "date-fns/locale/index.js";
+// src/utils.mjs
 
-export function onlyDigits(v=""){ return String(v).replace(/\D+/g, ""); }
-export function fmtDateBR(iso){
-  if(!iso) return "-";
-  try { return format(new Date(iso), "dd/MM/yyyy HH:mm", { locale: ptBR }); }
-  catch { return String(iso); }
-}
-export function uid(prefix="id"){ return `${prefix}_${Math.random().toString(36).slice(2,8)}_${Date.now().toString(36)}`; }
+// ---------- Ambiente ----------
+export const isProd = () => String(process.env.NODE_ENV || "").toLowerCase() === "production";
+export const isDev = () => !isProd();
 
-export function toProof(token, appSecret){
-  // appsecret_proof = HMAC-SHA256(token, appsecret)
-  return crypto.createHmac("sha256", appSecret).update(token).digest("hex");
-}
-
-export function verifyMetaSignature({ appSecret, signatureHeader, rawBody }){
-  try{
-    if(!signatureHeader || !appSecret || !rawBody) return false;
-    const [algo, sig] = String(signatureHeader).split("=");
-    if (algo !== "sha256") return false;
-    const expected = crypto.createHmac("sha256", appSecret).update(rawBody).digest("hex");
-    return crypto.timingSafeEqual(Buffer.from(sig,"hex"), Buffer.from(expected,"hex"));
-  }catch{
-    return false;
+export function requireEnv(name) {
+  const v = process.env[name];
+  if (v === undefined || v === null || v === "") {
+    throw new Error(`Env var missing: ${name}`);
   }
+  return v;
 }
 
-// logs por área: use DEBUG="wa,webhook,db"
-export function dbg(area, ...args){
-  const areas = (process.env.DEBUG||"").split(",").map(s=>s.trim());
-  if(areas.includes(area)) console.debug(`[${area}]`, ...args);
+// ---------- Strings / Números ----------
+export function onlyDigits(v = "") {
+  return String(v).replace(/\D+/g, "");
+}
+
+export function toMoneyBR(value) {
+  const n = typeof value === "number" ? value : Number(value || 0);
+  return new Intl.NumberFormat("pt-BR", { style: "currency", currency: process.env.CURRENCY || "BRL" }).format(n);
+}
+
+// ---------- Datas ----------
+export function fmtDateBR(input, { includeTime = false } = {}) {
+  if (!input) return "";
+  const d = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(d.getTime())) return "";
+
+  const tz = process.env.TIMEZONE || "America/Sao_Paulo";
+  const datePart = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: tz,
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(d);
+
+  if (!includeTime) return datePart;
+
+  const timePart = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(d);
+
+  return `${datePart} ${timePart}`;
+}
+
+export function isoLocal(input = new Date()) {
+  const d = input instanceof Date ? input : new Date(input);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString();
+}
+
+// ---------- Objetos ----------
+export function parseJSONSafe(str, fallback = null) {
+  try { return JSON.parse(str); } catch { return fallback; }
+}
+
+export function pick(obj, keys = []) {
+  const out = {};
+  for (const k of keys) if (obj && Object.prototype.hasOwnProperty.call(obj, k)) out[k] = obj[k];
+  return out;
+}
+
+export function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+
+// ---------- Logs helpers ----------
+export function logInfo(...args) {
+  console.log("[ingressai]", ...args);
+}
+export function logWarn(...args) {
+  console.warn("[ingressai][warn]", ...args);
+}
+export function logErr(...args) {
+  console.error("[ingressai][error]", ...args);
 }
