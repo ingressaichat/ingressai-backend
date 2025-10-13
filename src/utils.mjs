@@ -6,9 +6,7 @@ export const isDev = () => !isProd();
 
 export function requireEnv(name) {
   const v = process.env[name];
-  if (v === undefined || v === null || v === "") {
-    throw new Error(`Env var missing: ${name}`);
-  }
+  if (v === undefined || v === null || v === "") throw new Error(`Env var missing: ${name}`);
   return v;
 }
 
@@ -22,6 +20,13 @@ export function toMoneyBR(value) {
   return new Intl.NumberFormat("pt-BR", { style: "currency", currency: process.env.CURRENCY || "BRL" }).format(n);
 }
 
+// ---------- IDs ----------
+export function uid(prefix = "id") {
+  const rand = Math.random().toString(36).slice(2, 8);
+  const ts = Date.now().toString(36);
+  return `${prefix}_${rand}_${ts}`;
+}
+
 // ---------- Datas ----------
 export function fmtDateBR(input, { includeTime = false } = {}) {
   if (!input) return "";
@@ -30,19 +35,13 @@ export function fmtDateBR(input, { includeTime = false } = {}) {
 
   const tz = process.env.TIMEZONE || "America/Sao_Paulo";
   const datePart = new Intl.DateTimeFormat("pt-BR", {
-    timeZone: tz,
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
+    timeZone: tz, day: "2-digit", month: "2-digit", year: "numeric",
   }).format(d);
 
   if (!includeTime) return datePart;
 
   const timePart = new Intl.DateTimeFormat("pt-BR", {
-    timeZone: tz,
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
+    timeZone: tz, hour: "2-digit", minute: "2-digit", hour12: false,
   }).format(d);
 
   return `${datePart} ${timePart}`;
@@ -69,13 +68,7 @@ export function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-// ---------- Logs helpers ----------
-export function logInfo(...args) {
-  console.log("[ingressai]", ...args);
-}
-export function logWarn(...args) {
-  console.warn("[ingressai][warn]", ...args);
-}
-export function logErr(...args) {
-  console.error("[ingressai][error]", ...args);
-}
+// ---------- Logs ----------
+export function logInfo(...args) { console.log("[ingressai]", ...args); }
+export function logWarn(...args) { console.warn("[ingressai][warn]", ...args); }
+export function logErr (...args) { console.error("[ingressai][error]", ...args); }
