@@ -2,7 +2,7 @@
 
 // ---------- Ambiente ----------
 export const isProd = () => String(process.env.NODE_ENV || "").toLowerCase() === "production";
-export const isDev = () => !isProd();
+export const isDev  = () => !isProd();
 
 export function requireEnv(name) {
   const v = process.env[name];
@@ -72,3 +72,24 @@ export function sleep(ms) {
 export function logInfo(...args) { console.log("[ingressai]", ...args); }
 export function logWarn(...args) { console.warn("[ingressai][warn]", ...args); }
 export function logErr (...args) { console.error("[ingressai][error]", ...args); }
+
+// Logger de debug (controlado por DEBUG=1 ou DEBUG=true)
+export function dbg(...args) {
+  const v = String(process.env.DEBUG || "").toLowerCase();
+  if (v === "1" || v === "true" || v === "yes") {
+    console.log("[ingressai][debug]", ...args);
+  }
+}
+
+// ---------- Meta / appsecret_proof ----------
+import crypto from "crypto";
+/**
+ * Gera appsecret_proof para chamadas ao Graph API/WhatsApp Cloud.
+ * proof = HMAC-SHA256(token, app_secret) em hex.
+ */
+export function toProof(token, appSecret) {
+  const t = token || process.env.WHATSAPP_TOKEN || process.env.ACCESS_TOKEN || "";
+  const s = appSecret || process.env.APP_SECRET || "";
+  if (!t || !s) return "";
+  return crypto.createHmac("sha256", s).update(t).digest("hex");
+}
