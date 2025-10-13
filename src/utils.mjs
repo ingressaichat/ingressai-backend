@@ -73,7 +73,7 @@ export function logInfo(...args) { console.log("[ingressai]", ...args); }
 export function logWarn(...args) { console.warn("[ingressai][warn]", ...args); }
 export function logErr (...args) { console.error("[ingressai][error]", ...args); }
 
-// Logger de debug (controlado por DEBUG=1 ou DEBUG=true)
+// Logger de debug (controlado por DEBUG=1|true|yes)
 export function dbg(...args) {
   const v = String(process.env.DEBUG || "").toLowerCase();
   if (v === "1" || v === "true" || v === "yes") {
@@ -81,15 +81,44 @@ export function dbg(...args) {
   }
 }
 
-// ---------- Meta / appsecret_proof ----------
+// ---------- Meta / appsecret_proof & assinatura ----------
 import crypto from "crypto";
+
 /**
- * Gera appsecret_proof para chamadas ao Graph API/WhatsApp Cloud.
- * proof = HMAC-SHA256(token, app_secret) em hex.
+ * appsecret_proof para Graph/WhatsApp Cloud.
+ * proof = HMAC-SHA256( token, app_secret ) em hex
  */
 export function toProof(token, appSecret) {
   const t = token || process.env.WHATSAPP_TOKEN || process.env.ACCESS_TOKEN || "";
   const s = appSecret || process.env.APP_SECRET || "";
   if (!t || !s) return "";
   return crypto.createHmac("sha256", s).update(t).digest("hex");
+}
+
+/**
+ * Verifica a assinatura do Meta (x-hub-signature-256).
+ * @param {Buffer|string} rawBody - corpo bruto EXACTO recebido (sem parse)
+ * @param {string} headerSig - valor do header 'x-hub-signature-256'
+ * @param {string} appSecret - opcional; usa APP_SECRET se omitido
+ * @returns {boolean}
+ */
+export function verifyMetaSignature(rawBody, headerSig, appSecret) {
+  try {
+    const secret = appSecret || process.env.APP_SECRET || "";
+    if (!secret || !headerSig) return false;
+    // header: "sha256=<hex>"
+    const parts = String(headerSig).split("=", 2);
+    if (parts.length !== 2 || parts[0] !== "sha256") return false;
+    const sigBuf = Buffer.from(parts[1], "hex");
+
+    const bodyBuf = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(
+      typeof rawBody === "string" ? rawBody : JSON.stringify(rawBody || "")
+    );
+
+    const mac = crypto.createHmac("sha256", secret).update(bodyBuf).digest();
+    // timing safe
+    return mac.length === sigBuf.length && crypto.timingSafeEqual(mac, sigBuf);
+  } catch {
+    return false;
+  }
 }
