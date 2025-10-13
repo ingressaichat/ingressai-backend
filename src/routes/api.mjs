@@ -14,6 +14,8 @@ router.use("/organizers", org);
 router.use("/tickets", tickets);
 router.use("/validator", validator);
 router.use("/webhook", webhook);
-router.get("/cities", (_req,res)=> res.redirect(307, "/api/events/cities"));
+
+// compat antigo
+router.get("/cities", (_req,res) => res.redirect(307, "/api/events/cities"));
 
 export default router;
