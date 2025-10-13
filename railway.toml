@@ -1,8 +1,8 @@
 [build]
-builder = "Dockerfile"
+builder = "DOCKERFILE"
 
 [deploy]
+numReplicas = 1
 restartPolicyType = "ON_FAILURE"
-
-[service]
-internal_port = 8080
+restartPolicyMaxRetries = 3
+healthcheckPath = "/api/health"
