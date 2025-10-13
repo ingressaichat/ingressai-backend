@@ -1,6 +1,10 @@
 node_modules
 npm-debug.log
+yarn.lock
+pnpm-lock.yaml
 .git
 .gitignore
 .DS_Store
 .env
+.env.*
+*.local

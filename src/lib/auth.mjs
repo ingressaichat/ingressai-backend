@@ -1,80 +1,66 @@
-// src/lib/auth.mjs
-import crypto from "node:crypto";
-import { SESSION_SECRET, ADMIN_PHONES, ORG_PHONES } from "../config.mjs";
+// src/routes/auth.mjs
+import { Router } from "express";
+import { sendOtp } from "../lib/wa.mjs";
 
+const router = Router();
+
+// armazenamento simples em memória (troque pelo seu store/redis se quiser)
 const OTP_TTL_MS = 5 * 60 * 1000;
-const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const otpStore = new Map(); // phone -> { code, exp, tries }
+const otps = new Map(); // key: phone, value: { code, exp }
 
-const now = () => Date.now();
-const onlyDigits = (s) => String(s || "").replace(/\D+/g, "");
+function onlyDigits(v = "") { return String(v).replace(/\D+/g, ""); }
+function makeCode() { return String(Math.floor(100000 + Math.random()*900000)); }
 
-const rand = (min, max) => Math.floor(Math.random()*(max-min+1)) + min;
-const makeCode = () => String(rand(100000, 999999)); // 6 dígitos
-
-const b64url = (buf) => Buffer.from(buf).toString("base64").replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/g,"");
-const fromB64url = (str) => Buffer.from(str.replace(/-/g,"+").replace(/_/g,"/"), "base64");
-const sign = (data) => crypto.createHmac("sha256", SESSION_SECRET).update(data).digest();
-
-export async function requestOTPInternal(sendFn, phoneRaw) {
-  const phone = onlyDigits(phoneRaw);
-  if (!phone) throw new Error("phone_required");
-  const code = makeCode();
-  otpStore.set(phone, { code, exp: now()+OTP_TTL_MS, tries: 0 });
-
-  try { await sendFn(phone, `Seu código de login IngressAI: ${code}`); }
-  catch { console.log("[OTP:FALLBACK]", phone, code); }
-  return true;
-}
-
-export function verifyOTPInternal(phoneRaw, codeRaw) {
-  const phone = onlyDigits(phoneRaw);
-  const code  = onlyDigits(codeRaw);
-  const item = otpStore.get(phone);
-  if (!item) return { ok: false, reason: "not_requested" };
-  if (now() > item.exp) { otpStore.delete(phone); return { ok: false, reason: "expired" }; }
-  if (String(code) !== String(item.code)) {
-    item.tries = (item.tries || 0) + 1;
-    if (item.tries > 6) otpStore.delete(phone);
-    return { ok: false, reason: "invalid" };
-  }
-  otpStore.delete(phone);
-  const isAdmin = ADMIN_PHONES.includes(phone);
-  const isOrganizer = isAdmin || ORG_PHONES.includes(phone);
-  return { ok: true, isAdmin, isOrganizer };
-}
-
-export function setSessionCookie(res, session) {
-  const payload = { ...session, iat: now(), exp: now()+SESSION_TTL_MS };
-  const json = Buffer.from(JSON.stringify(payload));
-  const sig = sign(json);
-  const token = `${b64url(json)}.${b64url(sig)}`;
-
-  res.cookie("ia_session", token, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "none",
-    path: "/",
-    maxAge: SESSION_TTL_MS,
-  });
-}
-
-export function readSession(req) {
-  const raw = req.cookies?.ia_session || null;
-  if (!raw) return null;
-  const [p64, s64] = String(raw).split(".");
-  if (!p64 || !s64) return null;
+router.post("/request", async (req, res) => {
   try {
-    const payloadBuf = fromB64url(p64);
-    const sigBuf     = fromB64url(s64);
-    const expected   = sign(payloadBuf);
-    if (!crypto.timingSafeEqual(sigBuf, expected)) return null;
-    const data = JSON.parse(payloadBuf.toString("utf8"));
-    if (now() > Number(data.exp || 0)) return null;
-    return { phone: data.phone, isOrganizer: !!data.isOrganizer, isAdmin: !!data.isAdmin };
-  } catch { return null; }
-}
+    const raw = req.body?.phone || "";
+    const phone = onlyDigits(raw);
+    if (phone.length < 10) return res.status(400).json({ ok:false, error:"phone_invalid" });
 
-export function logout(res) {
-  res.clearCookie("ia_session", { path: "/" });
-}
+    const code = makeCode();
+    const exp = Date.now() + OTP_TTL_MS;
+    otps.set(phone, { code, exp });
+
+    // LOG local
+    console.log("[AUTH] OTP para %s: %s", phone, code);
+
+    // Enviar via WhatsApp
+    await sendOtp(phone, code).catch(err => {
+      console.error("sendOtp.error", err?.message || err);
+    });
+
+    return res.json({ ok:true });
+  } catch (e) {
+    console.error("auth.request.error", e?.stack || e);
+    return res.status(500).json({ ok:false, error:"server_error" });
+  }
+});
+
+router.post("/verify", (req, res) => {
+  try {
+    const phone = onlyDigits(req.body?.phone || "");
+    const code  = String(req.body?.code || "").trim();
+    const item = otps.get(phone);
+    if (!item || item.exp < Date.now() || item.code !== code) {
+      return res.status(401).json({ ok:false, error:"otp_invalid" });
+    }
+    otps.delete(phone); // one-time
+
+    // cria cookie de sessão
+    const sid = `ia_${Math.random().toString(36).slice(2)}_${Date.now()}`;
+    res.cookie("ia_session", sid, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "None",
+      path: "/",
+      maxAge: 1000 * 60 * 60 * 24 * 7,
+    });
+
+    return res.json({ ok:true });
+  } catch (e) {
+    console.error("auth.verify.error", e?.stack || e);
+    return res.status(500).json({ ok:false, error:"server_error" });
+  }
+});
+
+export default router;

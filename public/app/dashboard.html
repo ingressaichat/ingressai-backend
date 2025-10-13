@@ -1,64 +1,86 @@
 <!doctype html>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Dashboard — IngressAI</title>
-<style>
-  body{font:16px/1.45 -apple-system,BlinkMacSystemFont,Segoe UI,Roboto,Ubuntu,Inter,system-ui,sans-serif;background:#f6f8fc;margin:0;color:#0b1220}
-  .wrap{max-width:960px;margin:0 auto;padding:24px}
-  .card{background:#fff;border:1px solid #e5ecff;border-radius:16px;box-shadow:0 10px 28px rgba(47,125,217,.14);padding:16px;margin-bottom:16px}
-  .btn{border:1px solid #d6e4ff;border-radius:999px;min-height:44px;padding:0 16px;background:#fff;font-weight:800;box-shadow:0 6px 18px rgba(47,125,217,.12);display:inline-flex;align-items:center;gap:8px}
-  table{width:100%;border-collapse:collapse} th,td{padding:8px;border-bottom:1px solid #eef3ff;text-align:left}
-  .muted{color:#5b6b86}
-</style>
-<script>
-  const API = (location.origin + "/api").replace(/\/+$/,"");
-
-  async function j(url, opt){
-    const r = await fetch(url,{credentials:"include",headers:{Accept:"application/json"},...opt});
-    if(!r.ok) throw new Error("HTTP "+r.status);
-    return r.json();
-  }
-
-  async function boot(){
-    const me = await j(API+"/auth/session").catch(()=>null);
-    if(!me || !me.ok){ location.replace("/app/login.html"); return; }
-
-    // ajuste a rota se necessário
-    const data = await j(API+"/events?owner=me").catch(()=>({items:[]}));
-    const tbody = document.querySelector("#events-body");
-
-    if(!data.items?.length){
-      tbody.innerHTML = '<tr><td colspan="4" class="muted">Sem eventos ainda.</td></tr>';
-      return;
-    }
-
-    tbody.innerHTML = "";
-    for(const ev of data.items){
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td><strong>${ev.title||"-"}</strong><div class="muted">${ev.city||""}</div></td>
-        <td>${ev.date ? new Date(ev.date).toLocaleString("pt-BR") : "-"}</td>
-        <td>${(ev.sold??0)} / ${(ev.capacity??"-")}</td>
-        <td style="display:flex;gap:8px;flex-wrap:wrap">
-          <a class="btn" href="${API.replace(/\/api$/,'')}/app/validator.html" target="_blank" rel="noopener">Validador</a>
-          <a class="btn" href="${API}/tickets/export?event=${encodeURIComponent(ev.id)}">Baixar CSV</a>
-        </td>`;
-      tbody.appendChild(tr);
-    }
-  }
-  addEventListener("DOMContentLoaded", boot);
-</script>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dashboard — IngressAI</title>
+  <meta name="robots" content="noindex,nofollow" />
+  <style>
+    body{margin:0;font:16px/1.45 system-ui,Segoe UI,Roboto,Inter,sans-serif;background:#f6f8fc;color:#0b1220}
+    header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#fff;border-bottom:1px solid #e7eefb;position:sticky;top:0}
+    main{max-width:1100px;margin:24px auto;padding:0 16px}
+    .card{background:#fff;border:1px solid #e7eefb;border-radius:12px;padding:16px;box-shadow:0 6px 18px rgba(47,125,217,.08)}
+    .grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+    .btn{display:inline-flex;align-items:center;gap:8px;padding:.6rem 1rem;border-radius:10px;border:1px solid #d6e4ff;background:#fff;font-weight:700}
+    .muted{color:#5b6b86}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:8px;border-bottom:1px solid #eef2ff;text-align:left}
+  </style>
+</head>
 <body>
-  <div class="wrap">
+<header>
+  <strong>IngressAI • Dashboard</strong>
+  <nav>
+    <a class="btn" href="/app/validator.html">Validador</a>
+  </nav>
+</header>
+<main>
+  <section class="grid">
     <div class="card">
-      <h1>Dashboard</h1>
-      <p class="muted">Acompanhe seus eventos e acesse o validador.</p>
-    </div>
-    <div class="card">
-      <table>
-        <thead><tr><th>Evento</th><th>Data</th><th>Vendas</th><th>Ações</th></tr></thead>
-        <tbody id="events-body"><tr><td colspan="4" class="muted">Carregando…</td></tr></tbody>
+      <h3 style="margin:0 0 8px 0">Meus eventos</h3>
+      <div id="ev-hint" class="muted">Carregando…</div>
+      <table id="tbl-events" style="display:none">
+        <thead><tr><th>Evento</th><th>Cidade</th><th>Data</th><th>Vendas</th></tr></thead>
+        <tbody></tbody>
       </table>
     </div>
-  </div>
+    <div class="card">
+      <h3 style="margin:0 0 8px 0">Resumo</h3>
+      <div id="summary">—</div>
+    </div>
+  </section>
+</main>
+<script>
+(async () => {
+  const API = (location.origin + "/api"); // como está no mesmo domínio (Railway)
+  const $ = (s, c=document)=>c.querySelector(s);
+
+  function fmtBRL(n){ try{return (n||0).toLocaleString("pt-BR",{style:"currency",currency:"BRL"})}catch{return "R$ 0,00"}}
+
+  async function fetchJSON(url, opts={}){
+    const res = await fetch(url, { credentials:"include", ...opts });
+    if (!res.ok) throw new Error(res.status);
+    return res.json();
+  }
+
+  try{
+    const [{ items=[] }, stats] = await Promise.all([
+      fetchJSON(`${API}/events/mine`),       // implemente no backend se não existir
+      fetchJSON(`${API}/stats/overview`)     // idem
+    ]);
+
+    if (items.length){
+      $("#tbl-events").style.display="table";
+      $("#ev-hint").style.display="none";
+      const tb = $("#tbl-events tbody");
+      tb.innerHTML = items.map(ev => `
+        <tr>
+          <td>${ev.title||"-"}</td>
+          <td>${ev.city||"-"}</td>
+          <td>${ev.date_label||ev.date||"-"}</td>
+          <td>${ev.sold||0} / ${ev.stock||0}</td>
+        </tr>
+      `).join("");
+    } else {
+      $("#ev-hint").textContent = "Nenhum evento ainda.";
+    }
+
+    $("#summary").textContent = `Receita total: ${fmtBRL(stats?.revenue||0)} • Ingressos: ${stats?.tickets||0}`;
+  }catch(e){
+    $("#ev-hint").textContent = "Erro ao carregar.";
+    console.error(e);
+  }
+})();
+</script>
 </body>
+</html>

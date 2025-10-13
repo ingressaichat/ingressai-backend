@@ -1,26 +1,14 @@
 import { Router } from "express";
-import axios from "axios";
 
-const media = Router();
+const router = Router();
 
-/** GET /api/media/proxy?url=https://... */
-media.get("/proxy", async (req, res) => {
-  try {
-    const url = String(req.query.url || "");
-    if (!/^https?:\/\//i.test(url)) return res.sendStatus(400);
-
-    const r = await axios.get(url, { responseType: "stream" });
-    // repassa headers úteis (tipo, tamanho, etc.)
-    if (r.headers) {
-      Object.entries(r.headers).forEach(([k, v]) => {
-        if (k && typeof v !== "undefined") res.set(k, String(v));
-      });
-    }
-    r.data.pipe(res);
-  } catch (err) {
-    console.error("[media.proxy] error", err?.message || err);
-    res.sendStatus(502);
-  }
+// stub de upload (recebe {url} ou {base64})
+router.post("/upload", (req, res) => {
+  const { url, base64, filename="file.bin" } = req.body || {};
+  if (!url && !base64) return res.status(400).json({ error: "send url or base64" });
+  // Em prod você faria upload para S3/GCS e retornaria a URL pública
+  const publicUrl = url || `data:application/octet-stream;base64,${base64}`;
+  return res.json({ ok: true, url: publicUrl, filename });
 });
 
-export default media;
+export default router;

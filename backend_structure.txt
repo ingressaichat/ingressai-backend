@@ -1,0 +1,54 @@
+.
+├── .dockerignore
+├── .env
+├── .env.example
+├── .gitignore
+├── .npmrc
+├── backend_structure.txt
+├── Dockerfile
+├── ingressai-backend-1.code-workspace
+├── package-lock.json
+├── package.json
+├── public
+│   ├── app
+│   │   ├── dashboard.html
+│   │   ├── index.html
+│   │   ├── login.html
+│   │   └── validator.html
+│   ├── app.js
+│   ├── dashboard.js
+│   ├── login.js
+│   └── styles.css
+├── railway.toml
+├── README.md
+└── src
+    ├── app.mjs
+    ├── bot.mjs
+    ├── config.mjs
+    ├── lib
+    │   ├── auth.mjs
+    │   ├── db.mjs
+    │   ├── meta.mjs
+    │   ├── pdf.mjs
+    │   ├── session.mjs
+    │   └── wa.mjs
+    ├── mw
+    │   └── sessions.mjs
+    ├── organizers.mjs
+    ├── routes
+    │   ├── api.mjs
+    │   ├── auth.mjs
+    │   ├── core.mjs
+    │   ├── events.mjs
+    │   ├── health.mjs
+    │   ├── media.mjs
+    │   ├── org.mjs
+    │   ├── purchase.mjs
+    │   ├── tickets.mjs
+    │   ├── validator.mjs
+    │   └── webhook.mjs
+    ├── server.mjs
+    ├── store.mjs
+    └── utils.mjs
+
+7 directories, 45 files

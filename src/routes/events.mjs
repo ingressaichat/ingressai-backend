@@ -1,47 +1,33 @@
 import { Router } from "express";
-import { body, validationResult } from "express-validator";
-import { listEvents, createEvent, updateEvent, deleteEvent, findEvent } from "../lib/db.mjs";
+import { listEvents, listCities, publishEvent, findEvent, createTickets } from "../lib/db.mjs";
+import { sendText } from "../lib/wa.mjs";
 
-const events = Router();
+const router = Router();
 
-/** Lista pública (vitrine) */
-events.get("/", async (req, res) => {
-  const page = Number(req.query.page || 1);
-  const size = Number(req.query.size || 50);
-  const data = await listEvents(page, size);
-  return res.json(data);
+router.get("/", (_req,res)=> res.json({ items: listEvents({ publishedOnly:true }) }) );
+router.get("/cities", (_req,res)=> res.json(listCities()) );
+
+router.post("/:id/publish", (req,res)=>{
+  try { const ev = publishEvent(req.params.id); res.json({ ok:true, event:ev }); }
+  catch(e){ res.status(404).json({ ok:false, error:e.message||"not_found" }); }
 });
 
-/** Detalhe público */
-events.get("/:id", async (req, res) => {
-  const ev = await findEvent(req.params.id);
-  if (!ev) return res.status(404).json({ ok: false, error: "not_found" });
-  return res.json({ ok: true, event: ev });
-});
-
-/** Admin: criar */
-events.post("/",
-  body("id").isString().trim().notEmpty(),
-  body("title").isString().trim().notEmpty(),
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
-    const ev = await createEvent(req.body);
-    return res.status(201).json({ ok: true, event: ev });
+// util: gerar tickets de teste
+router.post("/:id/tickets", async (req,res)=>{
+  try{
+    const buyers = Array.isArray(req.body?.buyers) ? req.body.buyers : [];
+    const out = createTickets(req.params.id, buyers);
+    for(const tk of out){ if(tk.phone) await sendText(tk.phone, `🎟️ Seu ingresso: ${tk.code}`); }
+    res.json({ ok:true, items: out });
+  }catch(e){
+    res.status(400).json({ ok:false, error:e.message||"bad_request" });
   }
-);
-
-/** Admin: update parcial */
-events.patch("/:id", async (req, res) => {
-  const ev = await updateEvent(req.params.id, req.body || {});
-  if (!ev) return res.status(404).json({ ok: false, error: "not_found" });
-  return res.json({ ok: true, event: ev });
 });
 
-/** Admin: remover */
-events.delete("/:id", async (req, res) => {
-  await deleteEvent(req.params.id);
-  return res.json({ ok: true });
+router.get("/:id", (req,res)=>{
+  const ev = findEvent(req.params.id);
+  if(!ev) return res.status(404).json({ ok:false, error:"not_found" });
+  res.json(ev);
 });
 
-export default events;
+export default router;

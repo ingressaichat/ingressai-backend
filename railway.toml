@@ -1,7 +1,8 @@
 [build]
-builder = "NIXPACKS"
+builder = "Dockerfile"
 
-[env]
-NIXPACKS_NODE_VERSION = "22"
-NIXPACKS_NPM_INSTALL_CMD = "npm ci --omit=optional --no-audit --no-fund"
-NIXPACKS_LOG = "debug"
+[deploy]
+restartPolicyType = "ON_FAILURE"
+
+[service]
+internal_port = 8080

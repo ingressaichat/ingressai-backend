@@ -2,6 +2,7 @@ import express from "express";
 import cookieParser from "cookie-parser";
 import path from "node:path";
 import authRoutes from "./routes/auth.mjs";
+import bot from "./bot.mjs"; // ⬅️ novo import
 
 const app = express();
 
@@ -53,6 +54,11 @@ app.post("/api", (req, res) => {
 
 /* ===== Rotas de API ===== */
 app.use("/api/auth", authRoutes);
+
+/* ===== Webhook do WhatsApp ===== */
+/* expõe GET/POST /webhook (router real de src/routes/webhook.mjs; se der erro no import,
+   src/bot.mjs cai no stub – mas agora a rota está montada de qualquer forma) */
+app.use("/", bot);
 
 /* ===== Front (dashboard em public/app) ===== */
 const APP_DIR = path.resolve("public/app");
